@@ -16,6 +16,7 @@ internal sealed class MarketAutomationController : IDisposable
     private readonly DependencyService dependencies;
     private readonly RetainerMarketUi ui;
     private readonly List<int> checkedUndercuts = [];
+    private int[] allRows = [];
     private int[] rows = [];
     private int position;
     private DateTime nextActionUtc;
@@ -84,7 +85,10 @@ internal sealed class MarketAutomationController : IDisposable
         skippedNoCompetitorCount = 0;
         skipAdjustmentAfterClose = false;
         adjustmentPass = mode == AutomationMode.Adjust;
-        rows = AutomationPlan.ListingRows(listingCount);
+        allRows = AutomationPlan.ListingRows(listingCount);
+        rows = mode == AutomationMode.Adjust
+            ? allRows
+            : ui.GetUniqueMarketCheckRows(listingCount);
         position = 0;
 
         Status = mode switch
@@ -175,6 +179,12 @@ internal sealed class MarketAutomationController : IDisposable
 
                 rows = AutomationPlan.NormalizeUndercutRows(checkedUndercuts, ui.GetListingCount());
                 position = 0;
+                if (Mode == AutomationMode.Check)
+                {
+                    Complete($"Undercut check complete: {rows.Length} of {allRows.Length} listing(s) are undercut.");
+                    return;
+                }
+                adjustmentPass = true;
                 if (rows.Length == 0)
                 {
                     Complete("Allagan Market does not currently show any undercut listings.");
@@ -243,7 +253,7 @@ internal sealed class MarketAutomationController : IDisposable
                         ? $"No competing listing remains for item {position + 1} of {rows.Length}; leaving its price unchanged"
                         : $"Allagan Market checked item {position + 1} of {rows.Length}; no competing listings";
                     MoveTo(AutomationStep.CloseMarketResults,
-                        TimeSpan.FromMilliseconds(Math.Max(150, config.ActionDelayMilliseconds)));
+                        TimeSpan.FromMilliseconds(Math.Max(250, config.ActionDelayMilliseconds)));
                     return;
                 }
 
@@ -251,7 +261,7 @@ internal sealed class MarketAutomationController : IDisposable
                     ? $"Applying Marketbuddy pricing to item {position + 1} of {rows.Length}"
                     : $"Allagan Market checked item {position + 1} of {rows.Length}";
                 MoveTo(adjustmentPass ? AutomationStep.ClickBestListing : AutomationStep.CloseMarketResults,
-                    TimeSpan.FromMilliseconds(Math.Max(150, config.ActionDelayMilliseconds)));
+                    TimeSpan.FromMilliseconds(Math.Max(250, config.ActionDelayMilliseconds)));
                 break;
 
             case AutomationStep.CloseMarketResults:
@@ -295,13 +305,11 @@ internal sealed class MarketAutomationController : IDisposable
                 else
                 {
                     MoveTo(AutomationStep.CaptureCheckedStatus,
-                        TimeSpan.FromMilliseconds(Math.Max(150, config.ActionDelayMilliseconds)));
+                        TimeSpan.FromMilliseconds(Math.Max(250, config.ActionDelayMilliseconds)));
                 }
                 break;
 
             case AutomationStep.CaptureCheckedStatus:
-                if (ui.IsUndercutRow(rows[position]))
-                    checkedUndercuts.Add(rows[position]);
                 AdvanceOrFinishCheckPass();
                 break;
 
@@ -335,23 +343,11 @@ internal sealed class MarketAutomationController : IDisposable
             return;
         }
 
-        if (Mode == AutomationMode.Check)
-        {
-            Complete($"Undercut check complete: {checkedUndercuts.Distinct().Count()} of {rows.Length} listing(s) are undercut.");
-            return;
-        }
-
-        rows = AutomationPlan.NormalizeUndercutRows(checkedUndercuts, ui.GetListingCount());
+        rows = allRows;
         position = 0;
-        adjustmentPass = true;
-        if (rows.Length == 0)
-        {
-            Complete("Undercut check complete: every listing is already competitively priced.");
-            return;
-        }
-
-        Status = $"Check complete; adjusting {rows.Length} undercut listing(s)";
-        MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(200));
+        checkedUndercuts.Clear();
+        Status = "Market checks complete; confirming every Allagan Market row";
+        MoveTo(AutomationStep.ShowListingForDiscovery, TimeSpan.Zero);
     }
 
     private void AdvanceOrCompleteAdjustment(bool adjusted)

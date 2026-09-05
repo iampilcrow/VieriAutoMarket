@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0.3
+
+- Fixed checks stalling when identical items appear in consecutive retainer slots.
+- Accept populated market rows immediately even when the game's duplicate-search flag does not reset correctly.
+- Query each unique item and quality combination once, then verify every matching retainer row for undercuts.
+- Give Allagan Market a balanced observation interval before closing and classifying each result.
+
 ## 1.0.0.2
 
 - Wait for the game's definitive market-response state before deciding that a listing has no competitors.

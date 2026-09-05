@@ -42,6 +42,10 @@ internal enum ListingPriceState
     Undercut,
 }
 
+internal readonly record struct MarketListingIdentity(uint ItemId, bool IsHighQuality);
+
+internal readonly record struct MarketListingRow(int VisualIndex, MarketListingIdentity Identity);
+
 internal static class AutomationPlan
 {
     internal static int[] ListingRows(int listingCount) =>

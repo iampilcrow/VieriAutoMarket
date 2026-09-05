@@ -46,6 +46,42 @@ internal sealed unsafe class RetainerMarketUi
         return count;
     }
 
+    internal int[] GetUniqueMarketCheckRows(int listingCount)
+    {
+        AtkUnitBase* addon = GetAddon("RetainerSellList");
+        InventoryManager* inventory = InventoryManager.Instance();
+        InventoryContainer* container = inventory == null
+            ? null
+            : inventory->GetInventoryContainer(InventoryType.RetainerMarket);
+        if (addon == null || addon->AtkValues == null || container == null || !container->IsLoaded)
+            return AutomationPlan.ListingRows(listingCount);
+
+        var mappedRows = new List<MarketListingRow>();
+        for (int visualIndex = 0; visualIndex < listingCount; visualIndex++)
+        {
+            int atkIndex = 15 + visualIndex * 13;
+            if (atkIndex >= addon->AtkValuesCount || addon->AtkValues[atkIndex].Type == AtkValueType.Undefined)
+                return AutomationPlan.ListingRows(listingCount);
+
+            int inventorySlot = addon->AtkValues[atkIndex].Int;
+            if (inventorySlot < 0 || inventorySlot >= container->Size)
+                return AutomationPlan.ListingRows(listingCount);
+            InventoryItem* item = container->GetInventorySlot(inventorySlot);
+            if (item == null || item->ItemId == 0)
+                return AutomationPlan.ListingRows(listingCount);
+
+            mappedRows.Add(new MarketListingRow(
+                visualIndex,
+                new MarketListingIdentity(item->ItemId,
+                    item->Flags.HasFlag(InventoryItem.ItemFlags.HighQuality))));
+        }
+
+        return mappedRows
+            .GroupBy(x => x.Identity)
+            .Select(group => group.First().VisualIndex)
+            .ToArray();
+    }
+
     internal bool SelectListing(int visualIndex)
     {
         AtkUnitBase* addon = GetAddon("RetainerSellList");
@@ -109,6 +145,15 @@ internal sealed unsafe class RetainerMarketUi
         if (addon == null || !addon->IsVisible || addon->Results == null)
             return MarketResultsState.Waiting;
 
+        int resultCount = addon->Results->GetItemCount();
+        if (resultCount > 0)
+        {
+            AtkComponentListItemRenderer* first = addon->Results->GetItemRenderer(0);
+            AtkTextNode* price = first == null ? null : first->GetTextNodeById(5);
+            if (price != null && !string.IsNullOrWhiteSpace(price->NodeText.ToString()))
+                return MarketResultsState.ReadyWithListings;
+        }
+
         AgentModule* agentModule = AgentModule.Instance();
         AgentItemSearch* agent = agentModule == null
             ? null
@@ -121,20 +166,11 @@ internal sealed unsafe class RetainerMarketUi
         if (search->WaitingForListings || selectedItemId == 0 || search->SearchItemId != selectedItemId)
             return MarketResultsState.Waiting;
 
-        int resultCount = addon->Results->GetItemCount();
         if (resultCount <= 0)
             return search->ListingCount == 0
                 ? MarketResultsState.ReadyWithoutListings
                 : MarketResultsState.Waiting;
-
-        AtkComponentListItemRenderer* first = addon->Results->GetItemRenderer(0);
-        if (first == null)
-            return MarketResultsState.Waiting;
-
-        AtkTextNode* price = first->GetTextNodeById(5);
-        return price != null && !string.IsNullOrWhiteSpace(price->NodeText.ToString())
-            ? MarketResultsState.ReadyWithListings
-            : MarketResultsState.Waiting;
+        return MarketResultsState.Waiting;
     }
 
     private static uint GetSelectedMarketItemId()
