@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0.6
+
+- Shifted the retainer market toolbar controls 48 pixels back to the left for a better-balanced placement.
+
 ## 1.0.0.5
 
 - Prevented a player's retainers from undercutting one another by excluding every owned retainer from the competitor list.

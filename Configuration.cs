@@ -6,8 +6,8 @@ namespace VieriAutoMarket;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 3;
-    public float ToolbarOffsetX { get; set; } = 552f;
+    public int Version { get; set; } = 4;
+    public float ToolbarOffsetX { get; set; } = 504f;
     public float ToolbarOffsetY { get; set; } = 10f;
     public int ActionDelayMilliseconds { get; set; } = 100;
     public bool PrintCompletionToChat { get; set; } = true;
@@ -35,6 +35,13 @@ public sealed class Configuration : IPluginConfiguration
         {
             ToolbarOffsetX += 192f;
             Version = 3;
+            changed = true;
+        }
+
+        if (Version < 4)
+        {
+            ToolbarOffsetX -= 48f;
+            Version = 4;
             changed = true;
         }
 
