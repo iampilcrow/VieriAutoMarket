@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0.4
+
+- Prevent stale empty market data from being mistaken for a competitor disappearing during adjustment.
+- Recheck Allagan Market after an empty result and retry listings that remain red.
+- Report bounded adjustment failures explicitly instead of incorrectly counting them as competitor-free.
+
 ## 1.0.0.3
 
 - Fixed checks stalling when identical items appear in consecutive retainer slots.

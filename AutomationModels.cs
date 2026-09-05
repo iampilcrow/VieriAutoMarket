@@ -21,6 +21,7 @@ internal enum AutomationStep
     WaitForPriceWindowAfterCheck,
     ClosePriceWindow,
     WaitForListingAfterCheck,
+    VerifyEmptyAdjustment,
     CaptureCheckedStatus,
     ClickBestListing,
     WaitForAdjustment,

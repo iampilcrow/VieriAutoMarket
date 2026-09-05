@@ -7,6 +7,8 @@ internal sealed class MarketAutomationController : IDisposable
 {
     private static readonly TimeSpan WindowTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan MarketDataTimeout = TimeSpan.FromSeconds(25);
+    private static readonly TimeSpan EmptyResultConfirmation = TimeSpan.FromMilliseconds(1500);
+    private const int MaxEmptyResultRetries = 2;
 
     private readonly IFramework framework;
     private readonly IChatGui chat;
@@ -25,6 +27,8 @@ internal sealed class MarketAutomationController : IDisposable
     private bool skipAdjustmentAfterClose;
     private int adjustedCount;
     private int skippedNoCompetitorCount;
+    private int failedAdjustmentCount;
+    private int currentRowRetryCount;
 
     internal MarketAutomationController(IFramework framework, IChatGui chat, IPluginLog log,
         IDalamudPluginInterface pi, Configuration config, DependencyService dependencies, RetainerMarketUi ui)
@@ -83,6 +87,8 @@ internal sealed class MarketAutomationController : IDisposable
         checkedUndercuts.Clear();
         adjustedCount = 0;
         skippedNoCompetitorCount = 0;
+        failedAdjustmentCount = 0;
+        currentRowRetryCount = 0;
         skipAdjustmentAfterClose = false;
         adjustmentPass = mode == AutomationMode.Adjust;
         allRows = AutomationPlan.ListingRows(listingCount);
@@ -246,11 +252,11 @@ internal sealed class MarketAutomationController : IDisposable
 
                 if (marketResults == MarketResultsState.ReadyWithoutListings)
                 {
+                    if (!Expired(EmptyResultConfirmation))
+                        return;
                     skipAdjustmentAfterClose = adjustmentPass;
-                    if (adjustmentPass)
-                        skippedNoCompetitorCount++;
                     Status = adjustmentPass
-                        ? $"No competing listing remains for item {position + 1} of {rows.Length}; leaving its price unchanged"
+                        ? $"Verifying the empty result for item {position + 1} of {rows.Length}"
                         : $"Allagan Market checked item {position + 1} of {rows.Length}; no competing listings";
                     MoveTo(AutomationStep.CloseMarketResults,
                         TimeSpan.FromMilliseconds(Math.Max(250, config.ActionDelayMilliseconds)));
@@ -300,13 +306,42 @@ internal sealed class MarketAutomationController : IDisposable
                 if (skipAdjustmentAfterClose)
                 {
                     skipAdjustmentAfterClose = false;
-                    AdvanceOrCompleteAdjustment(adjusted: false);
+                    MoveTo(AutomationStep.VerifyEmptyAdjustment, TimeSpan.FromMilliseconds(400));
                 }
                 else
                 {
                     MoveTo(AutomationStep.CaptureCheckedStatus,
                         TimeSpan.FromMilliseconds(Math.Max(250, config.ActionDelayMilliseconds)));
                 }
+                break;
+
+            case AutomationStep.VerifyEmptyAdjustment:
+                ListingPriceState verifiedState = ui.GetListingPriceState(rows[position]);
+                if (verifiedState == ListingPriceState.Unknown)
+                {
+                    WaitOrFail(TimeSpan.FromSeconds(3), "Allagan Market to verify the listing after an empty result");
+                    return;
+                }
+
+                if (verifiedState is ListingPriceState.Undercut or ListingPriceState.NeedsCheck)
+                {
+                    if (currentRowRetryCount < MaxEmptyResultRetries)
+                    {
+                        currentRowRetryCount++;
+                        Status = $"Listing is still undercut; retrying item {position + 1} of {rows.Length} ({currentRowRetryCount}/{MaxEmptyResultRetries})";
+                        MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(300));
+                        return;
+                    }
+
+                    failedAdjustmentCount++;
+                    log.Warning("Listing row {Row} remained undercut after {Attempts} verified attempts",
+                        rows[position], MaxEmptyResultRetries + 1);
+                    AdvanceOrCompleteAdjustment(adjusted: false);
+                    break;
+                }
+
+                skippedNoCompetitorCount++;
+                AdvanceOrCompleteAdjustment(adjusted: false);
                 break;
 
             case AutomationStep.CaptureCheckedStatus:
@@ -355,6 +390,7 @@ internal sealed class MarketAutomationController : IDisposable
         if (adjusted)
             adjustedCount++;
         position++;
+        currentRowRetryCount = 0;
         if (position < rows.Length)
         {
             MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(Math.Max(200, config.ActionDelayMilliseconds)));
@@ -364,7 +400,10 @@ internal sealed class MarketAutomationController : IDisposable
         string skipped = skippedNoCompetitorCount > 0
             ? $" {skippedNoCompetitorCount} listing(s) no longer had a competitor and were left unchanged."
             : string.Empty;
-        Complete($"Pricing adjustment complete: {adjustedCount} undercut listing(s) updated through Marketbuddy.{skipped}");
+        string failed = failedAdjustmentCount > 0
+            ? $" {failedAdjustmentCount} listing(s) remained undercut after {MaxEmptyResultRetries + 1} verified attempts."
+            : string.Empty;
+        Complete($"Pricing adjustment complete: {adjustedCount} undercut listing(s) updated through Marketbuddy.{skipped}{failed}");
     }
 
     private bool IsMarketbuddyLocked()
