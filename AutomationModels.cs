@@ -10,6 +10,8 @@ internal enum AutomationMode
 internal enum AutomationStep
 {
     Idle,
+    ShowListingForDiscovery,
+    CaptureDiscoveredListing,
     SelectListing,
     WaitForContextMenu,
     OpenAdjustPrice,
@@ -30,6 +32,14 @@ internal enum MarketResultsState
     Waiting,
     ReadyWithoutListings,
     ReadyWithListings,
+}
+
+internal enum ListingPriceState
+{
+    Unknown,
+    Current,
+    NeedsCheck,
+    Undercut,
 }
 
 internal static class AutomationPlan

@@ -1,4 +1,5 @@
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
@@ -45,22 +46,32 @@ internal sealed unsafe class MarketToolbarWindow : Window
     {
         if (automation.IsRunning)
         {
-            if (ImGui.Button("Stop"))
+            if (IconButton(FontAwesomeIcon.Times, "Stop", "Stop the current VieriAutoMarket operation"))
                 automation.Stop();
             ImGui.SameLine();
-            ImGui.TextUnformatted(automation.Total > 0
-                ? $"{automation.Status} ({automation.CurrentNumber}/{automation.Total})"
-                : automation.Status);
+            ImGui.TextUnformatted(automation.Total > 0 ? $"{automation.CurrentNumber}/{automation.Total}" : "Working");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(automation.Status);
             return;
         }
 
-        if (ImGui.Button("Check For Undercuts"))
+        if (IconButton(FontAwesomeIcon.Search, "Check", "Check For Undercuts\nRefresh every listing so Allagan Market can identify undercuts"))
             automation.Start(AutomationMode.Check);
         ImGui.SameLine();
-        if (ImGui.Button("Adjust Undercut Pricing"))
+        if (IconButton(FontAwesomeIcon.Edit, "Adjust", "Adjust Undercut Pricing\nReprice every listing currently marked red by Allagan Market"))
             automation.Start(AutomationMode.Adjust);
         ImGui.SameLine();
-        if (ImGui.Button("Auto Check/Adjust Undercuts"))
+        if (IconButton(FontAwesomeIcon.Play, "Auto", "Auto Check/Adjust Undercuts\nRefresh all listings, then reprice confirmed undercuts"))
             automation.Start(AutomationMode.CheckAndAdjust);
+    }
+
+    private static bool IconButton(FontAwesomeIcon icon, string id, string tooltip)
+    {
+        bool clicked;
+        using (Plugin.Pi.UiBuilder.IconFontFixedWidthHandle.Push())
+            clicked = ImGui.Button($"{icon.ToIconString()}##VieriAutoMarket{id}", new Vector2(26, 0));
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(tooltip);
+        return clicked;
     }
 }

@@ -84,24 +84,18 @@ internal sealed class MarketAutomationController : IDisposable
         skippedNoCompetitorCount = 0;
         skipAdjustmentAfterClose = false;
         adjustmentPass = mode == AutomationMode.Adjust;
-        rows = adjustmentPass
-            ? AutomationPlan.NormalizeUndercutRows(ui.GetVisibleUndercutRows(), listingCount)
-            : AutomationPlan.ListingRows(listingCount);
+        rows = AutomationPlan.ListingRows(listingCount);
         position = 0;
-
-        if (rows.Length == 0)
-        {
-            Fail("Allagan Market does not currently show any undercut listings. Enable its retainer-list highlighting and check prices first.");
-            return;
-        }
 
         Status = mode switch
         {
             AutomationMode.Check => "Checking every listing for undercuts",
-            AutomationMode.Adjust => $"Adjusting {rows.Length} undercut listing(s)",
+            AutomationMode.Adjust => "Finding every listing marked undercut",
             _ => "Checking every listing, then adjusting undercuts",
         };
-        MoveTo(AutomationStep.SelectListing, TimeSpan.Zero);
+        MoveTo(mode == AutomationMode.Adjust
+            ? AutomationStep.ShowListingForDiscovery
+            : AutomationStep.SelectListing, TimeSpan.Zero);
         chat.Print(Status + ". Keep the retainer market windows open.", Plugin.Tag);
     }
 
@@ -148,6 +142,48 @@ internal sealed class MarketAutomationController : IDisposable
 
         switch (Step)
         {
+            case AutomationStep.ShowListingForDiscovery:
+                if (!ui.IsReady("RetainerSellList"))
+                {
+                    WaitOrFail(WindowTimeout, "the retainer sell list");
+                    return;
+                }
+                if (!ui.ShowListingRow(rows[position]))
+                {
+                    Fail("Could not inspect the next retainer listing.");
+                    return;
+                }
+                Status = $"Finding undercuts: {position + 1} of {rows.Length}";
+                MoveTo(AutomationStep.CaptureDiscoveredListing);
+                break;
+
+            case AutomationStep.CaptureDiscoveredListing:
+                ListingPriceState priceState = ui.GetListingPriceState(rows[position]);
+                if (priceState == ListingPriceState.Unknown)
+                {
+                    WaitOrFail(TimeSpan.FromSeconds(2), "Allagan Market to paint the selected listing");
+                    return;
+                }
+                if (priceState == ListingPriceState.Undercut)
+                    checkedUndercuts.Add(rows[position]);
+                position++;
+                if (position < rows.Length)
+                {
+                    MoveTo(AutomationStep.ShowListingForDiscovery, TimeSpan.Zero);
+                    return;
+                }
+
+                rows = AutomationPlan.NormalizeUndercutRows(checkedUndercuts, ui.GetListingCount());
+                position = 0;
+                if (rows.Length == 0)
+                {
+                    Complete("Allagan Market does not currently show any undercut listings.");
+                    return;
+                }
+                Status = $"Adjusting {rows.Length} undercut listing(s)";
+                MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(150));
+                break;
+
             case AutomationStep.SelectListing:
                 if (!ui.IsReady("RetainerSellList"))
                 {
@@ -192,12 +228,6 @@ internal sealed class MarketAutomationController : IDisposable
 
             case AutomationStep.WaitForMarketResults:
                 MarketResultsState marketResults = ui.GetMarketResultsState();
-                // An empty comparison can expose no message on some game clients. Once the empty
-                // results window has remained stable for ten seconds, it is still a completed query.
-                if (marketResults == MarketResultsState.Waiting &&
-                    ui.IsReady("ItemSearchResult") && Expired(TimeSpan.FromSeconds(10)))
-                    marketResults = MarketResultsState.ReadyWithoutListings;
-
                 if (marketResults == MarketResultsState.Waiting)
                 {
                     WaitOrFail(MarketDataTimeout, "market results from Marketbuddy");
@@ -213,7 +243,7 @@ internal sealed class MarketAutomationController : IDisposable
                         ? $"No competing listing remains for item {position + 1} of {rows.Length}; leaving its price unchanged"
                         : $"Allagan Market checked item {position + 1} of {rows.Length}; no competing listings";
                     MoveTo(AutomationStep.CloseMarketResults,
-                        TimeSpan.FromMilliseconds(Math.Max(500, config.ActionDelayMilliseconds)));
+                        TimeSpan.FromMilliseconds(Math.Max(150, config.ActionDelayMilliseconds)));
                     return;
                 }
 
@@ -221,7 +251,7 @@ internal sealed class MarketAutomationController : IDisposable
                     ? $"Applying Marketbuddy pricing to item {position + 1} of {rows.Length}"
                     : $"Allagan Market checked item {position + 1} of {rows.Length}";
                 MoveTo(adjustmentPass ? AutomationStep.ClickBestListing : AutomationStep.CloseMarketResults,
-                    TimeSpan.FromMilliseconds(Math.Max(500, config.ActionDelayMilliseconds)));
+                    TimeSpan.FromMilliseconds(Math.Max(150, config.ActionDelayMilliseconds)));
                 break;
 
             case AutomationStep.CloseMarketResults:
@@ -265,7 +295,7 @@ internal sealed class MarketAutomationController : IDisposable
                 else
                 {
                     MoveTo(AutomationStep.CaptureCheckedStatus,
-                        TimeSpan.FromMilliseconds(Math.Max(500, config.ActionDelayMilliseconds)));
+                        TimeSpan.FromMilliseconds(Math.Max(150, config.ActionDelayMilliseconds)));
                 }
                 break;
 
@@ -321,7 +351,7 @@ internal sealed class MarketAutomationController : IDisposable
         }
 
         Status = $"Check complete; adjusting {rows.Length} undercut listing(s)";
-        MoveTo(AutomationStep.SelectListing, TimeSpan.FromSeconds(1));
+        MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(200));
     }
 
     private void AdvanceOrCompleteAdjustment(bool adjusted)
@@ -331,7 +361,7 @@ internal sealed class MarketAutomationController : IDisposable
         position++;
         if (position < rows.Length)
         {
-            MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(Math.Max(750, config.ActionDelayMilliseconds)));
+            MoveTo(AutomationStep.SelectListing, TimeSpan.FromMilliseconds(Math.Max(200, config.ActionDelayMilliseconds)));
             return;
         }
 

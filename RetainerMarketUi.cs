@@ -5,6 +5,7 @@ using ECommons.Automation;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace VieriAutoMarket;
@@ -55,6 +56,18 @@ internal sealed unsafe class RetainerMarketUi
         return true;
     }
 
+    internal bool ShowListingRow(int visualIndex)
+    {
+        AtkUnitBase* addon = GetAddon("RetainerSellList");
+        AtkComponentList* list = addon == null ? null : addon->GetComponentListById(11);
+        if (list == null || visualIndex < 0 || visualIndex >= list->GetItemCount())
+            return false;
+
+        list->ScrollToItem((short)visualIndex);
+        list->UpdateListItems();
+        return true;
+    }
+
     internal bool SelectAdjustPrice()
     {
         AtkUnitBase* addon = GetAddon("ContextMenu");
@@ -96,15 +109,23 @@ internal sealed unsafe class RetainerMarketUi
         if (addon == null || !addon->IsVisible || addon->Results == null)
             return MarketResultsState.Waiting;
 
+        AgentModule* agentModule = AgentModule.Instance();
+        AgentItemSearch* agent = agentModule == null
+            ? null
+            : (AgentItemSearch*)agentModule->GetAgentByInternalId(AgentId.ItemSearch);
+        if (agent == null || agent->InfoProxyItemSearch == null)
+            return MarketResultsState.Waiting;
+
+        var search = agent->InfoProxyItemSearch;
+        uint selectedItemId = GetSelectedMarketItemId();
+        if (search->WaitingForListings || selectedItemId == 0 || search->SearchItemId != selectedItemId)
+            return MarketResultsState.Waiting;
+
         int resultCount = addon->Results->GetItemCount();
         if (resultCount <= 0)
-        {
-            string hits = NodeText(addon->HitsMessage);
-            string error = NodeText(addon->ErrorMessage);
-            return !string.IsNullOrWhiteSpace(hits) || !string.IsNullOrWhiteSpace(error)
+            return search->ListingCount == 0
                 ? MarketResultsState.ReadyWithoutListings
                 : MarketResultsState.Waiting;
-        }
 
         AtkComponentListItemRenderer* first = addon->Results->GetItemRenderer(0);
         if (first == null)
@@ -116,7 +137,15 @@ internal sealed unsafe class RetainerMarketUi
             : MarketResultsState.Waiting;
     }
 
-    private static string NodeText(AtkTextNode* node) => node == null ? string.Empty : node->NodeText.ToString().Trim();
+    private static uint GetSelectedMarketItemId()
+    {
+        InventoryManager* inventory = InventoryManager.Instance();
+        InventoryContainer* blocked = inventory == null
+            ? null
+            : inventory->GetInventoryContainer(InventoryType.BlockedItems);
+        InventoryItem* selected = blocked == null || !blocked->IsLoaded ? null : blocked->GetInventorySlot(0);
+        return selected == null ? 0 : selected->ItemId;
+    }
 
     internal bool ClickBestMarketListing()
     {
@@ -137,15 +166,18 @@ internal sealed unsafe class RetainerMarketUi
         return true;
     }
 
-    internal bool IsUndercutRow(int visualIndex)
+    internal bool IsUndercutRow(int visualIndex) =>
+        GetListingPriceState(visualIndex) == ListingPriceState.Undercut;
+
+    internal ListingPriceState GetListingPriceState(int visualIndex)
     {
         AtkUnitBase* addon = GetAddon("RetainerSellList");
         if (addon == null || !addon->IsVisible)
-            return false;
+            return ListingPriceState.Unknown;
 
         AtkComponentList* list = addon->GetComponentListById(11);
         if (list == null)
-            return false;
+            return ListingPriceState.Unknown;
 
         for (int i = 0; i < list->ListLength; i++)
         {
@@ -154,10 +186,16 @@ internal sealed unsafe class RetainerMarketUi
                 continue;
 
             AtkTextNode* text = renderer->GetTextNodeById(3);
-            return text != null && IsAllaganUndercutColor(text->TextColor.R, text->TextColor.G, text->TextColor.B);
+            if (text == null)
+                return ListingPriceState.Unknown;
+            if (IsAllaganUndercutColor(text->TextColor.R, text->TextColor.G, text->TextColor.B))
+                return ListingPriceState.Undercut;
+            if (IsAllaganNeedsCheckColor(text->TextColor.R, text->TextColor.G, text->TextColor.B))
+                return ListingPriceState.NeedsCheck;
+            return ListingPriceState.Current;
         }
 
-        return false;
+        return ListingPriceState.Unknown;
     }
 
     internal int[] GetVisibleUndercutRows()
@@ -181,9 +219,14 @@ internal sealed unsafe class RetainerMarketUi
         return rows.Order().ToArray();
     }
 
-    internal static bool IsAllaganUndercutColor(byte r, byte g, byte b)
+    internal static bool IsAllaganUndercutColor(byte r, byte g, byte b) =>
+        IsColor(r, g, b, ImGuiColors.DalamudRed);
+
+    internal static bool IsAllaganNeedsCheckColor(byte r, byte g, byte b) =>
+        IsColor(r, g, b, ImGuiColors.DalamudYellow);
+
+    private static bool IsColor(byte r, byte g, byte b, Vector4 color)
     {
-        Vector4 color = ImGuiColors.DalamudRed;
         byte expectedR = (byte)Math.Round(Math.Clamp(color.X, 0f, 1f) * 255f);
         byte expectedG = (byte)Math.Round(Math.Clamp(color.Y, 0f, 1f) * 255f);
         byte expectedB = (byte)Math.Round(Math.Clamp(color.Z, 0f, 1f) * 255f);

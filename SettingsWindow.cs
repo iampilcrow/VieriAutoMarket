@@ -49,7 +49,7 @@ internal sealed class SettingsWindow : Window
         }
 
         int delay = config.ActionDelayMilliseconds;
-        if (ImGui.SliderInt("Step delay", ref delay, 250, 1500, "%d ms"))
+        if (ImGui.SliderInt("Step delay", ref delay, 75, 800, "%d ms"))
         {
             config.ActionDelayMilliseconds = delay;
             config.Save();

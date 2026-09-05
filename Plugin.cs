@@ -28,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
         ECommonsMain.Init(Pi, this, ECommons.Module.DalamudReflector);
         config = Pi.GetPluginConfig() as Configuration ?? new Configuration();
         config.Initialize(Pi);
+        config.ApplyMigrations();
 
         var dependencies = new DependencyService(Pi, Log);
         var marketUi = new RetainerMarketUi(GameGui);
