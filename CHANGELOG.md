@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0.7
+
+- Fixed repeated 2/20 scan stalls on Aurum Regis Rapier by reading the active Retainer agent's selected inventory slot instead of the stale Blocked Items cache.
+- Cross-check the selected listing against the completed market search and repair a stale item identity before ownership and HQ/NQ filtering.
+- Split market-search identity waits from ownership waits so future failures identify the actual unavailable state.
+
 ## 1.0.0.6
 
 - Shifted the retainer market toolbar controls 48 pixels back to the left for a better-balanced placement.

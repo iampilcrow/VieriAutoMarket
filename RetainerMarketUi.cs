@@ -137,21 +137,29 @@ internal sealed unsafe class RetainerMarketUi
         snapshot = default;
         AddonRetainerSell* addon = (AddonRetainerSell*)GetAddon("RetainerSell");
         InventoryManager* inventory = InventoryManager.Instance();
-        InventoryContainer* blocked = inventory == null
+        InventoryContainer* market = inventory == null
             ? null
-            : inventory->GetInventoryContainer(InventoryType.BlockedItems);
-        InventoryItem* selected = blocked == null || !blocked->IsLoaded
+            : inventory->GetInventoryContainer(InventoryType.RetainerMarket);
+        AgentModule* agentModule = AgentModule.Instance();
+        AgentInterface* retainerAgent = agentModule == null
             ? null
-            : blocked->GetInventorySlot(0);
+            : agentModule->GetAgentByInternalId(AgentId.Retainer);
         RetainerManager* retainers = RetainerManager.Instance();
         ulong retainerId = retainers == null ? 0 : retainers->LastSelectedRetainerId;
-        if (addon == null || !addon->IsVisible || selected == null || selected->ItemId == 0 ||
-            addon->AtkValues == null || addon->AtkValuesCount <= 5 || retainerId == 0)
+        if (addon == null || !addon->IsVisible || market == null || !market->IsLoaded ||
+            retainerAgent == null || addon->AtkValues == null || addon->AtkValuesCount <= 5 || retainerId == 0)
             return false;
 
-        int inventorySlot = selected->Slot;
+        // AgentRetainer.SelectedSlot is the inventory slot backing the currently open
+        // Adjust Price window. BlockedItems[0] is not reliable here: it can retain the
+        // preceding listing when Marketbuddy opens comparison windows in quick succession.
+        const int AgentRetainerSelectedSlotOffset = 0x5C;
+        int inventorySlot = *((byte*)retainerAgent + AgentRetainerSelectedSlotOffset);
+        if (inventorySlot < 0 || inventorySlot >= market->Size)
+            return false;
+        InventoryItem* selected = market->GetInventorySlot(inventorySlot);
         int askingPrice = addon->AtkValues[5].Int;
-        if (inventorySlot < 0 || askingPrice <= 0)
+        if (selected == null || selected->ItemId == 0 || askingPrice <= 0)
             return false;
 
         string retainerName = "Current retainer";
@@ -171,6 +179,33 @@ internal sealed unsafe class RetainerMarketUi
             retainerId,
             retainerName,
             string.IsNullOrWhiteSpace(itemName) ? $"Item {selected->ItemId}" : itemName);
+        return true;
+    }
+
+    internal bool TryAlignListingWithMarketSearch(
+        RetainerListingSnapshot selected,
+        out RetainerListingSnapshot aligned)
+    {
+        aligned = selected;
+        AgentModule* agentModule = AgentModule.Instance();
+        AgentItemSearch* agent = agentModule == null
+            ? null
+            : (AgentItemSearch*)agentModule->GetAgentByInternalId(AgentId.ItemSearch);
+        if (agent == null || agent->InfoProxyItemSearch == null)
+            return false;
+
+        InfoProxyItemSearch* search = agent->InfoProxyItemSearch;
+        if (search->WaitingForListings || search->SearchItemId == 0)
+            return false;
+
+        if (selected.Identity.ItemId != search->SearchItemId)
+        {
+            aligned = selected with
+            {
+                Identity = new MarketListingIdentity(search->SearchItemId, selected.Identity.IsHighQuality),
+            };
+        }
+
         return true;
     }
 
@@ -283,8 +318,7 @@ internal sealed unsafe class RetainerMarketUi
             return MarketResultsState.Waiting;
 
         var search = agent->InfoProxyItemSearch;
-        uint selectedItemId = GetSelectedMarketItemId();
-        if (search->WaitingForListings || selectedItemId == 0 || search->SearchItemId != selectedItemId)
+        if (search->WaitingForListings || search->SearchItemId == 0)
             return MarketResultsState.Waiting;
 
         if (resultCount <= 0)
@@ -292,16 +326,6 @@ internal sealed unsafe class RetainerMarketUi
                 ? MarketResultsState.ReadyWithoutListings
                 : MarketResultsState.Waiting;
         return MarketResultsState.Waiting;
-    }
-
-    private static uint GetSelectedMarketItemId()
-    {
-        InventoryManager* inventory = InventoryManager.Instance();
-        InventoryContainer* blocked = inventory == null
-            ? null
-            : inventory->GetInventoryContainer(InventoryType.BlockedItems);
-        InventoryItem* selected = blocked == null || !blocked->IsLoaded ? null : blocked->GetInventorySlot(0);
-        return selected == null ? 0 : selected->ItemId;
     }
 
     internal ExternalListingState GetBestExternalMarketListing(
