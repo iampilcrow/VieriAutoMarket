@@ -21,6 +21,9 @@ internal sealed class MarketAutomationController : IDisposable
     private DateTime nextActionUtc;
     private DateTime stepStartedUtc;
     private bool adjustmentPass;
+    private bool skipAdjustmentAfterClose;
+    private int adjustedCount;
+    private int skippedNoCompetitorCount;
 
     internal MarketAutomationController(IFramework framework, IChatGui chat, IPluginLog log,
         IDalamudPluginInterface pi, Configuration config, DependencyService dependencies, RetainerMarketUi ui)
@@ -77,6 +80,9 @@ internal sealed class MarketAutomationController : IDisposable
 
         Mode = mode;
         checkedUndercuts.Clear();
+        adjustedCount = 0;
+        skippedNoCompetitorCount = 0;
+        skipAdjustmentAfterClose = false;
         adjustmentPass = mode == AutomationMode.Adjust;
         rows = adjustmentPass
             ? AutomationPlan.NormalizeUndercutRows(ui.GetVisibleUndercutRows(), listingCount)
@@ -185,11 +191,32 @@ internal sealed class MarketAutomationController : IDisposable
                 break;
 
             case AutomationStep.WaitForMarketResults:
-                if (!ui.MarketResultsLoaded())
+                MarketResultsState marketResults = ui.GetMarketResultsState();
+                // An empty comparison can expose no message on some game clients. Once the empty
+                // results window has remained stable for ten seconds, it is still a completed query.
+                if (marketResults == MarketResultsState.Waiting &&
+                    ui.IsReady("ItemSearchResult") && Expired(TimeSpan.FromSeconds(10)))
+                    marketResults = MarketResultsState.ReadyWithoutListings;
+
+                if (marketResults == MarketResultsState.Waiting)
                 {
                     WaitOrFail(MarketDataTimeout, "market results from Marketbuddy");
                     return;
                 }
+
+                if (marketResults == MarketResultsState.ReadyWithoutListings)
+                {
+                    skipAdjustmentAfterClose = adjustmentPass;
+                    if (adjustmentPass)
+                        skippedNoCompetitorCount++;
+                    Status = adjustmentPass
+                        ? $"No competing listing remains for item {position + 1} of {rows.Length}; leaving its price unchanged"
+                        : $"Allagan Market checked item {position + 1} of {rows.Length}; no competing listings";
+                    MoveTo(AutomationStep.CloseMarketResults,
+                        TimeSpan.FromMilliseconds(Math.Max(500, config.ActionDelayMilliseconds)));
+                    return;
+                }
+
                 Status = adjustmentPass
                     ? $"Applying Marketbuddy pricing to item {position + 1} of {rows.Length}"
                     : $"Allagan Market checked item {position + 1} of {rows.Length}";
@@ -230,8 +257,16 @@ internal sealed class MarketAutomationController : IDisposable
                     WaitOrFail(WindowTimeout, "the retainer sell list after checking");
                     return;
                 }
-                MoveTo(AutomationStep.CaptureCheckedStatus,
-                    TimeSpan.FromMilliseconds(Math.Max(500, config.ActionDelayMilliseconds)));
+                if (skipAdjustmentAfterClose)
+                {
+                    skipAdjustmentAfterClose = false;
+                    AdvanceOrCompleteAdjustment(adjusted: false);
+                }
+                else
+                {
+                    MoveTo(AutomationStep.CaptureCheckedStatus,
+                        TimeSpan.FromMilliseconds(Math.Max(500, config.ActionDelayMilliseconds)));
+                }
                 break;
 
             case AutomationStep.CaptureCheckedStatus:
@@ -256,7 +291,7 @@ internal sealed class MarketAutomationController : IDisposable
                         Fail("Marketbuddy did not confirm the new price. Enable its Auto Input New Price and Auto Confirm New Price options.");
                     return;
                 }
-                AdvanceOrCompleteAdjustment();
+                AdvanceOrCompleteAdjustment(adjusted: true);
                 break;
         }
     }
@@ -289,8 +324,10 @@ internal sealed class MarketAutomationController : IDisposable
         MoveTo(AutomationStep.SelectListing, TimeSpan.FromSeconds(1));
     }
 
-    private void AdvanceOrCompleteAdjustment()
+    private void AdvanceOrCompleteAdjustment(bool adjusted)
     {
+        if (adjusted)
+            adjustedCount++;
         position++;
         if (position < rows.Length)
         {
@@ -298,7 +335,10 @@ internal sealed class MarketAutomationController : IDisposable
             return;
         }
 
-        Complete($"Pricing adjustment complete: {rows.Length} undercut listing(s) updated through Marketbuddy.");
+        string skipped = skippedNoCompetitorCount > 0
+            ? $" {skippedNoCompetitorCount} listing(s) no longer had a competitor and were left unchanged."
+            : string.Empty;
+        Complete($"Pricing adjustment complete: {adjustedCount} undercut listing(s) updated through Marketbuddy.{skipped}");
     }
 
     private bool IsMarketbuddyLocked()

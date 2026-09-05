@@ -90,22 +90,33 @@ internal sealed unsafe class RetainerMarketUi
                normalized.Contains("Modifier le prix", StringComparison.OrdinalIgnoreCase);
     }
 
-    internal bool MarketResultsLoaded()
+    internal MarketResultsState GetMarketResultsState()
     {
         AddonItemSearchResult* addon = (AddonItemSearchResult*)GetAddon("ItemSearchResult");
         if (addon == null || !addon->IsVisible || addon->Results == null)
-            return false;
+            return MarketResultsState.Waiting;
 
-        if (addon->Results->GetItemCount() <= 0)
-            return false;
+        int resultCount = addon->Results->GetItemCount();
+        if (resultCount <= 0)
+        {
+            string hits = NodeText(addon->HitsMessage);
+            string error = NodeText(addon->ErrorMessage);
+            return !string.IsNullOrWhiteSpace(hits) || !string.IsNullOrWhiteSpace(error)
+                ? MarketResultsState.ReadyWithoutListings
+                : MarketResultsState.Waiting;
+        }
 
         AtkComponentListItemRenderer* first = addon->Results->GetItemRenderer(0);
         if (first == null)
-            return false;
+            return MarketResultsState.Waiting;
 
         AtkTextNode* price = first->GetTextNodeById(5);
-        return price != null && !string.IsNullOrWhiteSpace(price->NodeText.ToString());
+        return price != null && !string.IsNullOrWhiteSpace(price->NodeText.ToString())
+            ? MarketResultsState.ReadyWithListings
+            : MarketResultsState.Waiting;
     }
+
+    private static string NodeText(AtkTextNode* node) => node == null ? string.Empty : node->NodeText.ToString().Trim();
 
     internal bool ClickBestMarketListing()
     {

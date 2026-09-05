@@ -25,6 +25,13 @@ internal enum AutomationStep
     BeginAdjustmentPass,
 }
 
+internal enum MarketResultsState
+{
+    Waiting,
+    ReadyWithoutListings,
+    ReadyWithListings,
+}
+
 internal static class AutomationPlan
 {
     internal static int[] ListingRows(int listingCount) =>

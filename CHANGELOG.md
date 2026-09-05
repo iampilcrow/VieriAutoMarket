@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0.1
+
+- Treat an empty market comparison as a successful undercut check instead of waiting until timeout.
+- Leave a listing unchanged and continue safely if its competitors disappear before the adjustment pass.
+
 ## 1.0.0.0
 
 - Added retainer-list controls for checking undercuts, adjusting confirmed undercuts, and running both steps together.
