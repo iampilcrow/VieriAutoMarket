@@ -95,6 +95,7 @@ internal sealed class MarketAutomationController : IDisposable
         }
 
         Mode = mode;
+        ui.BeginAutomationRun();
         // A new pass must begin from Allagan Market's unmodified state. Fresh ownership-aware
         // assessments are rebuilt item-by-item as the pass receives authoritative game results.
         config.MarketAssessments.Clear();
@@ -112,9 +113,7 @@ internal sealed class MarketAutomationController : IDisposable
         skipAdjustmentAfterClose = false;
         adjustmentPass = mode == AutomationMode.Adjust;
         allRows = AutomationPlan.ListingRows(listingCount);
-        rows = mode == AutomationMode.Adjust
-            ? allRows
-            : ui.GetUniqueMarketCheckRows(listingCount);
+        rows = allRows;
         position = 0;
 
         Status = mode switch
@@ -227,17 +226,10 @@ internal sealed class MarketAutomationController : IDisposable
                     WaitOrFail(WindowTimeout, "the retainer sell list");
                     return;
                 }
-                if (!ui.ShowListingRow(rows[position]) ||
-                    !ui.TryGetListingSnapshot(rows[position], out currentListing))
+                if (!ui.ShowListingRow(rows[position]))
                 {
-                    Fail("Could not verify the item, owner, and current price for the next retainer listing.");
+                    Fail("Could not show the next retainer listing.");
                     return;
-                }
-                if (currentAdjustmentRetryCount == 0)
-                {
-                    originalListing = currentListing;
-                    currentCompetitor = default;
-                    pendingSkipOutcome = string.Empty;
                 }
                 if (!ui.SelectListing(rows[position]))
                 {
@@ -272,6 +264,17 @@ internal sealed class MarketAutomationController : IDisposable
                     WaitOrFail(WindowTimeout, "the Adjust Price window");
                     return;
                 }
+                if (!ui.TryGetSelectedListingSnapshot(rows[position], out currentListing))
+                {
+                    WaitOrFail(WindowTimeout, "the selected listing details");
+                    return;
+                }
+                if (currentAdjustmentRetryCount == 0)
+                {
+                    originalListing = currentListing;
+                    currentCompetitor = default;
+                    pendingSkipOutcome = string.Empty;
+                }
                 MoveTo(AutomationStep.WaitForMarketResults);
                 break;
 
@@ -287,7 +290,7 @@ internal sealed class MarketAutomationController : IDisposable
                 {
                     if (!Expired(EmptyResultConfirmation))
                         return;
-                    RecordAssessment(currentListing.Identity, 0);
+                    RecordAssessment(currentListing, 0);
                     skipAdjustmentAfterClose = adjustmentPass;
                     pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
                     if (!adjustmentPass)
@@ -312,7 +315,7 @@ internal sealed class MarketAutomationController : IDisposable
 
                 if (externalState == ExternalListingState.None)
                 {
-                    RecordAssessment(currentListing.Identity, 0);
+                    RecordAssessment(currentListing, 0);
                     skipAdjustmentAfterClose = adjustmentPass;
                     pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
                     if (!adjustmentPass)
@@ -327,7 +330,7 @@ internal sealed class MarketAutomationController : IDisposable
                 }
 
                 currentCompetitor = externalListing;
-                RecordAssessment(currentListing.Identity, currentCompetitor.UnitPrice);
+                RecordAssessment(currentListing, currentCompetitor.UnitPrice);
                 if (!adjustmentPass)
                 {
                     AddReport(currentListing, currentCompetitor.UnitPrice, currentListing.UnitPrice,
@@ -401,7 +404,7 @@ internal sealed class MarketAutomationController : IDisposable
 
             case AutomationStep.VerifyEmptyAdjustment:
                 if (!ui.ShowListingRow(rows[position]) ||
-                    !ui.TryGetListingSnapshot(rows[position], out RetainerListingSnapshot emptyResultListing))
+                    !ui.TryGetInventoryListingSnapshot(originalListing, out RetainerListingSnapshot emptyResultListing))
                 {
                     WaitOrFail(TimeSpan.FromSeconds(3), "the listing after an empty market result");
                     return;
@@ -452,7 +455,7 @@ internal sealed class MarketAutomationController : IDisposable
                 }
                 if (refreshedState == ExternalListingState.None)
                 {
-                    RecordAssessment(currentListing.Identity, 0);
+                    RecordAssessment(currentListing, 0);
                     currentCompetitor = default;
                     pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
                     skipAdjustmentAfterClose = true;
@@ -461,7 +464,7 @@ internal sealed class MarketAutomationController : IDisposable
                 }
 
                 currentCompetitor = refreshedCompetitor;
-                RecordAssessment(currentListing.Identity, currentCompetitor.UnitPrice);
+                RecordAssessment(currentListing, currentCompetitor.UnitPrice);
                 if (!ui.ClickMarketListing(currentCompetitor.ResultIndex))
                 {
                     Fail("The cheapest verified external market listing could not be selected.");
@@ -482,7 +485,7 @@ internal sealed class MarketAutomationController : IDisposable
 
             case AutomationStep.VerifyAdjustment:
                 if (!ui.ShowListingRow(rows[position]) ||
-                    !ui.TryGetListingSnapshot(rows[position], out RetainerListingSnapshot verifiedListing))
+                    !ui.TryGetInventoryListingSnapshot(originalListing, out RetainerListingSnapshot verifiedListing))
                 {
                     WaitOrFail(PriceVerificationTimeout, "the saved retainer price");
                     return;
@@ -573,14 +576,17 @@ internal sealed class MarketAutomationController : IDisposable
         Complete($"Pricing adjustment complete: {adjustedCount} undercut listing(s) updated through Marketbuddy.{skipped}{competitive}{failed}");
     }
 
-    private void RecordAssessment(MarketListingIdentity identity, uint cheapestExternalPrice)
+    private void RecordAssessment(RetainerListingSnapshot listing, uint cheapestExternalPrice)
     {
         config.MarketAssessments.RemoveAll(x =>
-            x.ItemId == identity.ItemId && x.IsHighQuality == identity.IsHighQuality);
+            x.RetainerId == listing.RetainerId && x.VisualIndex == listing.VisualIndex);
         config.MarketAssessments.Add(new OwnedAwareMarketAssessment
         {
-            ItemId = identity.ItemId,
-            IsHighQuality = identity.IsHighQuality,
+            ItemId = listing.Identity.ItemId,
+            IsHighQuality = listing.Identity.IsHighQuality,
+            VisualIndex = listing.VisualIndex,
+            RetainerId = listing.RetainerId,
+            OwnedUnitPrice = listing.UnitPrice,
             CheapestExternalPrice = cheapestExternalPrice,
             CheckedAt = DateTime.UtcNow,
         });

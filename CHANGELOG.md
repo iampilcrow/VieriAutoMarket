@@ -3,6 +3,9 @@
 ## 1.0.0.6
 
 - Shifted the retainer market toolbar controls 48 pixels back to the left for a better-balanced placement.
+- Fixed Auto Check/Adjust timing out after the first listing when the game's owned-retainer cache briefly disappears between searches.
+- Read the selected listing directly from the Adjust Price window so item identity, HQ/NQ quality, slot, name, and price cannot drift from the visible row.
+- Check every visible retainer row in one top-to-bottom pass and retain ownership-aware highlighting by the exact retainer row.
 
 ## 1.0.0.5
 

@@ -16,8 +16,11 @@ internal sealed unsafe class RetainerMarketUi
 {
     private readonly IGameGui gameGui;
     private readonly Dictionary<uint, ByteColor> normalItemColors = [];
+    private readonly HashSet<ulong> ownedRetainerIds = [];
 
     internal RetainerMarketUi(IGameGui gameGui) => this.gameGui = gameGui;
+
+    internal void BeginAutomationRun() => ownedRetainerIds.Clear();
 
     internal AtkUnitBase* GetAddon(string name)
     {
@@ -127,6 +130,77 @@ internal sealed unsafe class RetainerMarketUi
             retainerName,
             GetListingName(visualIndex, item->ItemId));
         return retainerId != 0 && unitPrice != 0;
+    }
+
+    internal bool TryGetSelectedListingSnapshot(int visualIndex, out RetainerListingSnapshot snapshot)
+    {
+        snapshot = default;
+        AddonRetainerSell* addon = (AddonRetainerSell*)GetAddon("RetainerSell");
+        InventoryManager* inventory = InventoryManager.Instance();
+        InventoryContainer* blocked = inventory == null
+            ? null
+            : inventory->GetInventoryContainer(InventoryType.BlockedItems);
+        InventoryItem* selected = blocked == null || !blocked->IsLoaded
+            ? null
+            : blocked->GetInventorySlot(0);
+        RetainerManager* retainers = RetainerManager.Instance();
+        ulong retainerId = retainers == null ? 0 : retainers->LastSelectedRetainerId;
+        if (addon == null || !addon->IsVisible || selected == null || selected->ItemId == 0 ||
+            addon->AtkValues == null || addon->AtkValuesCount <= 5 || retainerId == 0)
+            return false;
+
+        int inventorySlot = selected->Slot;
+        int askingPrice = addon->AtkValues[5].Int;
+        if (inventorySlot < 0 || askingPrice <= 0)
+            return false;
+
+        string retainerName = "Current retainer";
+        RetainerManager.Retainer* activeRetainer = retainers->GetActiveRetainer();
+        if (activeRetainer != null && !string.IsNullOrWhiteSpace(activeRetainer->NameString))
+            retainerName = activeRetainer->NameString.Trim();
+
+        string itemName = addon->ItemName == null
+            ? $"Item {selected->ItemId}"
+            : new AddonMaster.RetainerSell(addon).ItemName.Trim();
+        snapshot = new RetainerListingSnapshot(
+            visualIndex,
+            inventorySlot,
+            new MarketListingIdentity(selected->ItemId,
+                selected->Flags.HasFlag(InventoryItem.ItemFlags.HighQuality)),
+            (uint)askingPrice,
+            retainerId,
+            retainerName,
+            string.IsNullOrWhiteSpace(itemName) ? $"Item {selected->ItemId}" : itemName);
+        return true;
+    }
+
+    internal bool TryGetInventoryListingSnapshot(RetainerListingSnapshot expected, out RetainerListingSnapshot snapshot)
+    {
+        snapshot = default;
+        InventoryManager* inventory = InventoryManager.Instance();
+        InventoryContainer* container = inventory == null
+            ? null
+            : inventory->GetInventoryContainer(InventoryType.RetainerMarket);
+        RetainerManager* retainers = RetainerManager.Instance();
+        if (container == null || !container->IsLoaded || expected.InventorySlot < 0 ||
+            expected.InventorySlot >= container->Size || retainers == null)
+            return false;
+
+        InventoryItem* item = container->GetInventorySlot(expected.InventorySlot);
+        ulong retainerId = retainers->LastSelectedRetainerId;
+        ulong rawPrice = inventory->GetRetainerMarketPrice((short)expected.InventorySlot);
+        if (item == null || item->ItemId == 0 || retainerId == 0 || rawPrice == 0)
+            return false;
+
+        uint unitPrice = rawPrice > uint.MaxValue ? uint.MaxValue : (uint)rawPrice;
+        snapshot = expected with
+        {
+            Identity = new MarketListingIdentity(item->ItemId,
+                item->Flags.HasFlag(InventoryItem.ItemFlags.HighQuality)),
+            UnitPrice = unitPrice,
+            RetainerId = retainerId,
+        };
+        return true;
     }
 
     internal bool SelectListing(int visualIndex)
@@ -367,9 +441,11 @@ internal sealed unsafe class RetainerMarketUi
             return;
 
         DateTime freshAfter = DateTime.UtcNow - TimeSpan.FromMinutes(30);
-        Dictionary<MarketListingIdentity, OwnedAwareMarketAssessment> fresh = assessments
-            .Where(x => x.CheckedAt >= freshAfter)
-            .GroupBy(x => new MarketListingIdentity(x.ItemId, x.IsHighQuality))
+        RetainerManager* retainers = RetainerManager.Instance();
+        ulong currentRetainerId = retainers == null ? 0 : retainers->LastSelectedRetainerId;
+        Dictionary<int, OwnedAwareMarketAssessment> fresh = assessments
+            .Where(x => x.CheckedAt >= freshAfter && x.RetainerId == currentRetainerId)
+            .GroupBy(x => x.VisualIndex)
             .ToDictionary(x => x.Key, x => x.OrderByDescending(y => y.CheckedAt).First());
         if (fresh.Count == 0)
             return;
@@ -383,8 +459,8 @@ internal sealed unsafe class RetainerMarketUi
             if (text == null || IsAllaganUndercutColor(text->TextColor.R, text->TextColor.G, text->TextColor.B) ||
                 IsAllaganNeedsCheckColor(text->TextColor.R, text->TextColor.G, text->TextColor.B))
                 continue;
-            if (TryGetListingSnapshot(renderer->ListItemIndex, out RetainerListingSnapshot row))
-                normalItemColors[row.Identity.ItemId] = text->TextColor;
+            if (fresh.TryGetValue(renderer->ListItemIndex, out OwnedAwareMarketAssessment? assessment))
+                normalItemColors[assessment.ItemId] = text->TextColor;
         }
 
         for (int i = 0; i < list->ListLength; i++)
@@ -394,16 +470,15 @@ internal sealed unsafe class RetainerMarketUi
                 continue;
             AtkTextNode* text = renderer->GetTextNodeById(3);
             if (text == null || !IsAllaganUndercutColor(text->TextColor.R, text->TextColor.G, text->TextColor.B) ||
-                !TryGetListingSnapshot(renderer->ListItemIndex, out RetainerListingSnapshot row) ||
-                !fresh.TryGetValue(row.Identity, out OwnedAwareMarketAssessment? assessment))
+                !fresh.TryGetValue(renderer->ListItemIndex, out OwnedAwareMarketAssessment? assessment))
                 continue;
 
             bool currentAgainstExternalMarket = assessment.CheapestExternalPrice == 0 ||
-                                                row.UnitPrice <= assessment.CheapestExternalPrice;
+                                                assessment.OwnedUnitPrice <= assessment.CheapestExternalPrice;
             if (!currentAgainstExternalMarket)
                 continue;
 
-            text->TextColor = normalItemColors.TryGetValue(row.Identity.ItemId, out ByteColor normal)
+            text->TextColor = normalItemColors.TryGetValue(assessment.ItemId, out ByteColor normal)
                 ? normal
                 : new ByteColor { R = 238, G = 238, B = 238, A = 255 };
         }
@@ -424,24 +499,29 @@ internal sealed unsafe class RetainerMarketUi
         return Math.Abs(r - expectedR) <= 3 && Math.Abs(g - expectedG) <= 3 && Math.Abs(b - expectedB) <= 3;
     }
 
-    private static bool TryGetOwnedRetainerIds(InfoProxyItemSearch* search, out HashSet<ulong> result)
+    private bool TryGetOwnedRetainerIds(InfoProxyItemSearch* search, out HashSet<ulong> result)
     {
-        result = [];
+        var liveRetainerIds = new HashSet<ulong>();
         bool completeRetainerListAvailable = false;
         RetainerManager* manager = RetainerManager.Instance();
         if (manager != null)
         {
             if (manager->LastSelectedRetainerId != 0)
-                result.Add(manager->LastSelectedRetainerId);
-            if (manager->IsReady)
+                liveRetainerIds.Add(manager->LastSelectedRetainerId);
+
+            int assignedRetainerCount = 0;
+            foreach (RetainerManager.Retainer retainer in manager->Retainers)
             {
-                completeRetainerListAvailable = true;
-                foreach (RetainerManager.Retainer retainer in manager->Retainers)
+                if (retainer.RetainerId != 0)
                 {
-                    if (retainer.RetainerId != 0)
-                        result.Add(retainer.RetainerId);
+                    assignedRetainerCount++;
+                    liveRetainerIds.Add(retainer.RetainerId);
                 }
             }
+
+            // IsReady can briefly clear while moving between market searches even though the
+            // populated retainer array is still authoritative for this active retainer session.
+            completeRetainerListAvailable = manager->IsReady || assignedRetainerCount > 0;
         }
 
         int playerRetainerCount = Math.Min((int)search->PlayerRetainerCount, 10);
@@ -451,10 +531,17 @@ internal sealed unsafe class RetainerMarketUi
         {
             ulong retainerId = search->PlayerRetainers[i].RetainerId;
             if (retainerId != 0)
-                result.Add(retainerId);
+                liveRetainerIds.Add(retainerId);
         }
 
-        return completeRetainerListAvailable && result.Count > 0;
+        if (completeRetainerListAvailable && liveRetainerIds.Count > 0)
+        {
+            ownedRetainerIds.Clear();
+            ownedRetainerIds.UnionWith(liveRetainerIds);
+        }
+
+        result = [.. ownedRetainerIds];
+        return result.Count > 0;
     }
 
     private string GetListingName(int visualIndex, uint itemId)

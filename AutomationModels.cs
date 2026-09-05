@@ -86,6 +86,9 @@ public sealed class OwnedAwareMarketAssessment
 {
     public uint ItemId { get; set; }
     public bool IsHighQuality { get; set; }
+    public int VisualIndex { get; set; }
+    public ulong RetainerId { get; set; }
+    public uint OwnedUnitPrice { get; set; }
     public uint CheapestExternalPrice { get; set; }
     public DateTime CheckedAt { get; set; }
 }
