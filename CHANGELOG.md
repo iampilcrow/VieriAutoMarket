@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0.8
+
+- Read market results from FFXIV's global Item Search data instead of the transient Item Search agent pointer, which becomes unavailable after the first Marketbuddy comparison.
+- Prevented the resulting 2/20 timeout while preserving owned-retainer exclusion and exact HQ/NQ filtering.
+
 ## 1.0.0.7
 
 - Fixed repeated 2/20 scan stalls on Aurum Regis Rapier by reading the active Retainer agent's selected inventory slot instead of the stale Blocked Items cache.

@@ -187,14 +187,10 @@ internal sealed unsafe class RetainerMarketUi
         out RetainerListingSnapshot aligned)
     {
         aligned = selected;
-        AgentModule* agentModule = AgentModule.Instance();
-        AgentItemSearch* agent = agentModule == null
-            ? null
-            : (AgentItemSearch*)agentModule->GetAgentByInternalId(AgentId.ItemSearch);
-        if (agent == null || agent->InfoProxyItemSearch == null)
+        InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
+        if (search == null)
             return false;
 
-        InfoProxyItemSearch* search = agent->InfoProxyItemSearch;
         if (search->WaitingForListings || search->SearchItemId == 0)
             return false;
 
@@ -310,14 +306,10 @@ internal sealed unsafe class RetainerMarketUi
                 return MarketResultsState.ReadyWithListings;
         }
 
-        AgentModule* agentModule = AgentModule.Instance();
-        AgentItemSearch* agent = agentModule == null
-            ? null
-            : (AgentItemSearch*)agentModule->GetAgentByInternalId(AgentId.ItemSearch);
-        if (agent == null || agent->InfoProxyItemSearch == null)
+        InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
+        if (search == null)
             return MarketResultsState.Waiting;
 
-        var search = agent->InfoProxyItemSearch;
         if (search->WaitingForListings || search->SearchItemId == 0)
             return MarketResultsState.Waiting;
 
@@ -337,14 +329,10 @@ internal sealed unsafe class RetainerMarketUi
         if (addon == null || !addon->IsVisible || addon->Results == null || addon->Results->GetItemCount() <= 0)
             return ExternalListingState.Waiting;
 
-        AgentModule* agentModule = AgentModule.Instance();
-        AgentItemSearch* agent = agentModule == null
-            ? null
-            : (AgentItemSearch*)agentModule->GetAgentByInternalId(AgentId.ItemSearch);
-        if (agent == null || agent->InfoProxyItemSearch == null)
+        InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
+        if (search == null)
             return ExternalListingState.Waiting;
 
-        InfoProxyItemSearch* search = agent->InfoProxyItemSearch;
         if (search->WaitingForListings || search->SearchItemId != selectedIdentity.ItemId)
             return ExternalListingState.Waiting;
 
