@@ -6,11 +6,15 @@ namespace VieriAutoMarket;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 2;
-    public float ToolbarOffsetX { get; set; } = 360f;
+    public int Version { get; set; } = 3;
+    public float ToolbarOffsetX { get; set; } = 552f;
     public float ToolbarOffsetY { get; set; } = 10f;
     public int ActionDelayMilliseconds { get; set; } = 100;
     public bool PrintCompletionToChat { get; set; } = true;
+    public DateTime LastRunAt { get; set; }
+    public string LastRunSummary { get; set; } = "No completed run yet.";
+    public List<MarketRunReportEntry> LastRunReport { get; set; } = [];
+    public List<OwnedAwareMarketAssessment> MarketAssessments { get; set; } = [];
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
@@ -19,12 +23,25 @@ public sealed class Configuration : IPluginConfiguration
 
     internal void ApplyMigrations()
     {
+        bool changed = false;
         if (Version < 2)
         {
             ActionDelayMilliseconds = 100;
             Version = 2;
-            Save();
+            changed = true;
         }
+
+        if (Version < 3)
+        {
+            ToolbarOffsetX += 192f;
+            Version = 3;
+            changed = true;
+        }
+
+        LastRunReport ??= [];
+        MarketAssessments ??= [];
+        if (changed)
+            Save();
     }
 
     internal void Save() => pluginInterface?.SavePluginConfig(this);

@@ -25,6 +25,7 @@ internal enum AutomationStep
     CaptureCheckedStatus,
     ClickBestListing,
     WaitForAdjustment,
+    VerifyAdjustment,
     BeginAdjustmentPass,
 }
 
@@ -43,9 +44,51 @@ internal enum ListingPriceState
     Undercut,
 }
 
+internal enum ExternalListingState
+{
+    Waiting,
+    None,
+    Ready,
+}
+
 internal readonly record struct MarketListingIdentity(uint ItemId, bool IsHighQuality);
 
 internal readonly record struct MarketListingRow(int VisualIndex, MarketListingIdentity Identity);
+
+internal readonly record struct RetainerListingSnapshot(
+    int VisualIndex,
+    int InventorySlot,
+    MarketListingIdentity Identity,
+    uint UnitPrice,
+    ulong RetainerId,
+    string RetainerName,
+    string ItemName);
+
+internal readonly record struct ExternalMarketListing(
+    int ResultIndex,
+    uint UnitPrice,
+    ulong RetainerId,
+    string RetainerName);
+
+public sealed class MarketRunReportEntry
+{
+    public string Item { get; set; } = string.Empty;
+    public string Retainer { get; set; } = string.Empty;
+    public string Quality { get; set; } = string.Empty;
+    public uint OldPrice { get; set; }
+    public string Competitor { get; set; } = string.Empty;
+    public uint CompetitorPrice { get; set; }
+    public uint FinalPrice { get; set; }
+    public string Outcome { get; set; } = string.Empty;
+}
+
+public sealed class OwnedAwareMarketAssessment
+{
+    public uint ItemId { get; set; }
+    public bool IsHighQuality { get; set; }
+    public uint CheapestExternalPrice { get; set; }
+    public DateTime CheckedAt { get; set; }
+}
 
 internal static class AutomationPlan
 {

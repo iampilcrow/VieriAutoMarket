@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0.5
+
+- Prevented a player's retainers from undercutting one another by excluding every owned retainer from the competitor list.
+- Ownership-aware highlighting no longer leaves a listing red merely because a matching listing on another owned retainer is cheaper.
+- Added item, quality, ownership, saved-price, and final-price validation before any adjustment can advance.
+- Duplicate listings now use the same cheapest external competitor instead of cascading through the player's own prices.
+- Added a persistent last-run report with old, competitor, and final prices plus an outcome for every adjustment.
+- Added per-item synchronization guards for Allagan Market and retainer inventory updates.
+- Moved the retainer toolbar controls approximately two inches to the right.
+
 ## 1.0.0.4
 
 - Prevent stale empty market data from being mistaken for a competitor disappearing during adjustment.

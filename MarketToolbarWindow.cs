@@ -44,6 +44,8 @@ internal sealed unsafe class MarketToolbarWindow : Window
 
     public override void Draw()
     {
+        ui.ApplyOwnershipAwareHighlighting(config.MarketAssessments);
+
         if (automation.IsRunning)
         {
             if (IconButton(FontAwesomeIcon.Times, "Stop", "Stop the current VieriAutoMarket operation"))
@@ -55,13 +57,13 @@ internal sealed unsafe class MarketToolbarWindow : Window
             return;
         }
 
-        if (IconButton(FontAwesomeIcon.Search, "Check", "Check For Undercuts\nRefresh every listing so Allagan Market can identify undercuts"))
+        if (IconButton(FontAwesomeIcon.Search, "Check", "Check For Undercuts\nRefresh listings and distinguish external sellers from your own retainers"))
             automation.Start(AutomationMode.Check);
         ImGui.SameLine();
-        if (IconButton(FontAwesomeIcon.Edit, "Adjust", "Adjust Undercut Pricing\nReprice every listing currently marked red by Allagan Market"))
+        if (IconButton(FontAwesomeIcon.Edit, "Adjust", "Adjust Undercut Pricing\nReprice red listings against the cheapest matching external seller only"))
             automation.Start(AutomationMode.Adjust);
         ImGui.SameLine();
-        if (IconButton(FontAwesomeIcon.Play, "Auto", "Auto Check/Adjust Undercuts\nRefresh all listings, then reprice confirmed undercuts"))
+        if (IconButton(FontAwesomeIcon.Play, "Auto", "Auto Check/Adjust Undercuts\nRefresh all listings, then reprice confirmed external undercuts"))
             automation.Start(AutomationMode.CheckAndAdjust);
     }
 

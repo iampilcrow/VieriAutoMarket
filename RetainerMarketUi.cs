@@ -4,8 +4,10 @@ using Dalamud.Plugin.Services;
 using ECommons.Automation;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.Graphics;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace VieriAutoMarket;
@@ -13,6 +15,7 @@ namespace VieriAutoMarket;
 internal sealed unsafe class RetainerMarketUi
 {
     private readonly IGameGui gameGui;
+    private readonly Dictionary<uint, ByteColor> normalItemColors = [];
 
     internal RetainerMarketUi(IGameGui gameGui) => this.gameGui = gameGui;
 
@@ -80,6 +83,50 @@ internal sealed unsafe class RetainerMarketUi
             .GroupBy(x => x.Identity)
             .Select(group => group.First().VisualIndex)
             .ToArray();
+    }
+
+    internal bool TryGetListingSnapshot(int visualIndex, out RetainerListingSnapshot snapshot)
+    {
+        snapshot = default;
+        AtkUnitBase* addon = GetAddon("RetainerSellList");
+        InventoryManager* inventory = InventoryManager.Instance();
+        InventoryContainer* container = inventory == null
+            ? null
+            : inventory->GetInventoryContainer(InventoryType.RetainerMarket);
+        if (addon == null || addon->AtkValues == null || container == null || !container->IsLoaded)
+            return false;
+
+        int atkIndex = 15 + visualIndex * 13;
+        if (atkIndex >= addon->AtkValuesCount || addon->AtkValues[atkIndex].Type == AtkValueType.Undefined)
+            return false;
+
+        int inventorySlot = addon->AtkValues[atkIndex].Int;
+        if (inventorySlot < 0 || inventorySlot >= container->Size)
+            return false;
+
+        InventoryItem* item = container->GetInventorySlot(inventorySlot);
+        if (item == null || item->ItemId == 0)
+            return false;
+
+        RetainerManager* retainers = RetainerManager.Instance();
+        ulong retainerId = retainers == null ? 0 : retainers->LastSelectedRetainerId;
+        string retainerName = "Current retainer";
+        RetainerManager.Retainer* activeRetainer = retainers == null ? null : retainers->GetActiveRetainer();
+        if (activeRetainer != null && !string.IsNullOrWhiteSpace(activeRetainer->NameString))
+            retainerName = activeRetainer->NameString.Trim();
+
+        ulong rawPrice = inventory->GetRetainerMarketPrice((short)inventorySlot);
+        uint unitPrice = rawPrice > uint.MaxValue ? uint.MaxValue : (uint)rawPrice;
+        snapshot = new RetainerListingSnapshot(
+            visualIndex,
+            inventorySlot,
+            new MarketListingIdentity(item->ItemId,
+                item->Flags.HasFlag(InventoryItem.ItemFlags.HighQuality)),
+            unitPrice,
+            retainerId,
+            retainerName,
+            GetListingName(visualIndex, item->ItemId));
+        return retainerId != 0 && unitPrice != 0;
     }
 
     internal bool SelectListing(int visualIndex)
@@ -183,13 +230,70 @@ internal sealed unsafe class RetainerMarketUi
         return selected == null ? 0 : selected->ItemId;
     }
 
-    internal bool ClickBestMarketListing()
+    internal ExternalListingState GetBestExternalMarketListing(
+        MarketListingIdentity selectedIdentity,
+        out ExternalMarketListing result)
     {
+        result = default;
         AddonItemSearchResult* addon = (AddonItemSearchResult*)GetAddon("ItemSearchResult");
         if (addon == null || !addon->IsVisible || addon->Results == null || addon->Results->GetItemCount() <= 0)
+            return ExternalListingState.Waiting;
+
+        AgentModule* agentModule = AgentModule.Instance();
+        AgentItemSearch* agent = agentModule == null
+            ? null
+            : (AgentItemSearch*)agentModule->GetAgentByInternalId(AgentId.ItemSearch);
+        if (agent == null || agent->InfoProxyItemSearch == null)
+            return ExternalListingState.Waiting;
+
+        InfoProxyItemSearch* search = agent->InfoProxyItemSearch;
+        if (search->WaitingForListings || search->SearchItemId != selectedIdentity.ItemId)
+            return ExternalListingState.Waiting;
+
+        if (!TryGetOwnedRetainerIds(search, out HashSet<ulong> ownedRetainerIds))
+            return ExternalListingState.Waiting;
+
+        int resultCount = Math.Min((int)search->ListingCount, 100);
+        uint lowestPrice = uint.MaxValue;
+        int lowestIndex = -1;
+        ulong lowestRetainer = 0;
+        for (int i = 0; i < resultCount; i++)
+        {
+            MarketBoardListing listing = search->Listings[i];
+            if (listing.ItemId != selectedIdentity.ItemId ||
+                listing.IsHqItem != selectedIdentity.IsHighQuality ||
+                listing.RetainerId == 0 ||
+                ownedRetainerIds.Contains(listing.RetainerId) ||
+                listing.UnitPrice == 0 ||
+                listing.UnitPrice >= lowestPrice)
+                continue;
+
+            lowestPrice = listing.UnitPrice;
+            lowestIndex = i;
+            lowestRetainer = listing.RetainerId;
+        }
+
+        if (lowestIndex < 0)
+            return ExternalListingState.None;
+
+        result = new ExternalMarketListing(
+            lowestIndex,
+            lowestPrice,
+            lowestRetainer,
+            GetMarketResultRetainerName(addon, lowestIndex));
+        return ExternalListingState.Ready;
+    }
+
+    internal bool ClickMarketListing(int resultIndex)
+    {
+        AddonItemSearchResult* addon = (AddonItemSearchResult*)GetAddon("ItemSearchResult");
+        if (addon == null || !addon->IsVisible || addon->Results == null ||
+            resultIndex < 0 || resultIndex >= addon->Results->GetItemCount())
             return false;
 
-        addon->Results->DispatchItemEvent(0, AtkEventType.ListItemClick);
+        addon->Results->ScrollToItem((short)resultIndex);
+        addon->Results->UpdateListItems();
+        addon->Results->DispatchItemEvent(resultIndex, AtkEventType.ListItemClick);
         return true;
     }
 
@@ -255,6 +359,56 @@ internal sealed unsafe class RetainerMarketUi
         return rows.Order().ToArray();
     }
 
+    internal void ApplyOwnershipAwareHighlighting(IReadOnlyCollection<OwnedAwareMarketAssessment> assessments)
+    {
+        AtkUnitBase* addon = GetAddon("RetainerSellList");
+        AtkComponentList* list = addon == null ? null : addon->GetComponentListById(11);
+        if (list == null || assessments.Count == 0)
+            return;
+
+        DateTime freshAfter = DateTime.UtcNow - TimeSpan.FromMinutes(30);
+        Dictionary<MarketListingIdentity, OwnedAwareMarketAssessment> fresh = assessments
+            .Where(x => x.CheckedAt >= freshAfter)
+            .GroupBy(x => new MarketListingIdentity(x.ItemId, x.IsHighQuality))
+            .ToDictionary(x => x.Key, x => x.OrderByDescending(y => y.CheckedAt).First());
+        if (fresh.Count == 0)
+            return;
+
+        for (int i = 0; i < list->ListLength; i++)
+        {
+            AtkComponentListItemRenderer* renderer = list->ItemRendererList[i].AtkComponentListItemRenderer;
+            if (renderer == null || renderer->ListItemIndex < 0)
+                continue;
+            AtkTextNode* text = renderer->GetTextNodeById(3);
+            if (text == null || IsAllaganUndercutColor(text->TextColor.R, text->TextColor.G, text->TextColor.B) ||
+                IsAllaganNeedsCheckColor(text->TextColor.R, text->TextColor.G, text->TextColor.B))
+                continue;
+            if (TryGetListingSnapshot(renderer->ListItemIndex, out RetainerListingSnapshot row))
+                normalItemColors[row.Identity.ItemId] = text->TextColor;
+        }
+
+        for (int i = 0; i < list->ListLength; i++)
+        {
+            AtkComponentListItemRenderer* renderer = list->ItemRendererList[i].AtkComponentListItemRenderer;
+            if (renderer == null || renderer->ListItemIndex < 0)
+                continue;
+            AtkTextNode* text = renderer->GetTextNodeById(3);
+            if (text == null || !IsAllaganUndercutColor(text->TextColor.R, text->TextColor.G, text->TextColor.B) ||
+                !TryGetListingSnapshot(renderer->ListItemIndex, out RetainerListingSnapshot row) ||
+                !fresh.TryGetValue(row.Identity, out OwnedAwareMarketAssessment? assessment))
+                continue;
+
+            bool currentAgainstExternalMarket = assessment.CheapestExternalPrice == 0 ||
+                                                row.UnitPrice <= assessment.CheapestExternalPrice;
+            if (!currentAgainstExternalMarket)
+                continue;
+
+            text->TextColor = normalItemColors.TryGetValue(row.Identity.ItemId, out ByteColor normal)
+                ? normal
+                : new ByteColor { R = 238, G = 238, B = 238, A = 255 };
+        }
+    }
+
     internal static bool IsAllaganUndercutColor(byte r, byte g, byte b) =>
         IsColor(r, g, b, ImGuiColors.DalamudRed);
 
@@ -268,5 +422,69 @@ internal sealed unsafe class RetainerMarketUi
         byte expectedB = (byte)Math.Round(Math.Clamp(color.Z, 0f, 1f) * 255f);
         // A small tolerance covers the conversion between ImGui's float color and the game's byte color.
         return Math.Abs(r - expectedR) <= 3 && Math.Abs(g - expectedG) <= 3 && Math.Abs(b - expectedB) <= 3;
+    }
+
+    private static bool TryGetOwnedRetainerIds(InfoProxyItemSearch* search, out HashSet<ulong> result)
+    {
+        result = [];
+        bool completeRetainerListAvailable = false;
+        RetainerManager* manager = RetainerManager.Instance();
+        if (manager != null)
+        {
+            if (manager->LastSelectedRetainerId != 0)
+                result.Add(manager->LastSelectedRetainerId);
+            if (manager->IsReady)
+            {
+                completeRetainerListAvailable = true;
+                foreach (RetainerManager.Retainer retainer in manager->Retainers)
+                {
+                    if (retainer.RetainerId != 0)
+                        result.Add(retainer.RetainerId);
+                }
+            }
+        }
+
+        int playerRetainerCount = Math.Min((int)search->PlayerRetainerCount, 10);
+        if (playerRetainerCount > 0)
+            completeRetainerListAvailable = true;
+        for (int i = 0; i < playerRetainerCount; i++)
+        {
+            ulong retainerId = search->PlayerRetainers[i].RetainerId;
+            if (retainerId != 0)
+                result.Add(retainerId);
+        }
+
+        return completeRetainerListAvailable && result.Count > 0;
+    }
+
+    private string GetListingName(int visualIndex, uint itemId)
+    {
+        AtkUnitBase* addon = GetAddon("RetainerSellList");
+        AtkComponentList* list = addon == null ? null : addon->GetComponentListById(11);
+        if (list != null)
+        {
+            for (int i = 0; i < list->ListLength; i++)
+            {
+                AtkComponentListItemRenderer* renderer = list->ItemRendererList[i].AtkComponentListItemRenderer;
+                if (renderer == null || renderer->ListItemIndex != visualIndex)
+                    continue;
+                AtkTextNode* text = renderer->GetTextNodeById(3);
+                string name = text == null ? string.Empty : text->NodeText.ToString().Trim();
+                if (!string.IsNullOrWhiteSpace(name))
+                    return name;
+            }
+        }
+
+        return $"Item {itemId}";
+    }
+
+    private static string GetMarketResultRetainerName(AddonItemSearchResult* addon, int resultIndex)
+    {
+        addon->Results->ScrollToItem((short)resultIndex);
+        addon->Results->UpdateListItems();
+        AtkComponentListItemRenderer* renderer = addon->Results->GetItemRenderer(resultIndex);
+        AtkTextNode* text = renderer == null ? null : renderer->GetTextNodeById(10);
+        string name = text == null ? string.Empty : text->NodeText.ToString().Trim();
+        return string.IsNullOrWhiteSpace(name) ? "External retainer" : name;
     }
 }

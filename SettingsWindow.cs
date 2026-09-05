@@ -17,8 +17,8 @@ internal sealed class SettingsWindow : Window
         this.automation = automation;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(500, 260),
-            MaximumSize = new Vector2(900, 900),
+            MinimumSize = new Vector2(620, 320),
+            MaximumSize = new Vector2(1200, 900),
         };
     }
 
@@ -66,7 +66,56 @@ internal sealed class SettingsWindow : Window
         ImGui.TextWrapped($"Status: {automation.Status}");
         if (automation.IsRunning && ImGui.Button("Stop current operation"))
             automation.Stop();
+
+        ImGui.Spacing();
+        if (ImGui.CollapsingHeader("Last run report", ImGuiTreeNodeFlags.DefaultOpen))
+            DrawLastRunReport();
     }
+
+    private void DrawLastRunReport()
+    {
+        ImGui.TextWrapped(config.LastRunSummary);
+        if (config.LastRunAt != default)
+            ImGui.TextDisabled(config.LastRunAt.ToString("g"));
+        if (config.LastRunReport.Count == 0)
+        {
+            ImGui.TextDisabled("No listing details were recorded for the last run.");
+            return;
+        }
+
+        ImGuiTableFlags flags = ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg |
+                                ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollX |
+                                ImGuiTableFlags.ScrollY;
+        if (!ImGui.BeginTable("VieriAutoMarketLastRun", 8, flags, new Vector2(0, 260)))
+            return;
+
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthFixed, 190);
+        ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthFixed, 90);
+        ImGui.TableSetupColumn("Quality", ImGuiTableColumnFlags.WidthFixed, 55);
+        ImGui.TableSetupColumn("Old", ImGuiTableColumnFlags.WidthFixed, 80);
+        ImGui.TableSetupColumn("Competitor", ImGuiTableColumnFlags.WidthFixed, 110);
+        ImGui.TableSetupColumn("External price", ImGuiTableColumnFlags.WidthFixed, 90);
+        ImGui.TableSetupColumn("Final", ImGuiTableColumnFlags.WidthFixed, 80);
+        ImGui.TableSetupColumn("Outcome", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableHeadersRow();
+
+        foreach (MarketRunReportEntry entry in config.LastRunReport)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(entry.Item);
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(entry.Retainer);
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(entry.Quality);
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatPrice(entry.OldPrice));
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(string.IsNullOrWhiteSpace(entry.Competitor) ? "—" : entry.Competitor);
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatPrice(entry.CompetitorPrice));
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(FormatPrice(entry.FinalPrice));
+            ImGui.TableNextColumn(); ImGui.TextUnformatted(entry.Outcome);
+        }
+
+        ImGui.EndTable();
+    }
+
+    private static string FormatPrice(uint value) => value == 0 ? "—" : $"{value:N0}";
 
     private void DrawDependency(string displayName, string internalName, Func<Task> install)
     {
