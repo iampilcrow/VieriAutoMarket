@@ -182,29 +182,6 @@ internal sealed unsafe class RetainerMarketUi
         return true;
     }
 
-    internal bool TryAlignListingWithMarketSearch(
-        RetainerListingSnapshot selected,
-        out RetainerListingSnapshot aligned)
-    {
-        aligned = selected;
-        InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
-        if (search == null)
-            return false;
-
-        if (search->WaitingForListings || search->SearchItemId == 0)
-            return false;
-
-        if (selected.Identity.ItemId != search->SearchItemId)
-        {
-            aligned = selected with
-            {
-                Identity = new MarketListingIdentity(search->SearchItemId, selected.Identity.IsHighQuality),
-            };
-        }
-
-        return true;
-    }
-
     internal bool TryGetInventoryListingSnapshot(RetainerListingSnapshot expected, out RetainerListingSnapshot snapshot)
     {
         snapshot = default;
@@ -306,18 +283,9 @@ internal sealed unsafe class RetainerMarketUi
                 return MarketResultsState.ReadyWithListings;
         }
 
-        InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
-        if (search == null)
-            return MarketResultsState.Waiting;
-
-        if (search->WaitingForListings || search->SearchItemId == 0)
-            return MarketResultsState.Waiting;
-
-        if (resultCount <= 0)
-            return search->ListingCount == 0
-                ? MarketResultsState.ReadyWithoutListings
-                : MarketResultsState.Waiting;
-        return MarketResultsState.Waiting;
+        return resultCount <= 0
+            ? MarketResultsState.ReadyWithoutListings
+            : MarketResultsState.Waiting;
     }
 
     internal ExternalListingState GetBestExternalMarketListing(
@@ -330,43 +298,90 @@ internal sealed unsafe class RetainerMarketUi
             return ExternalListingState.Waiting;
 
         InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
-        if (search == null)
-            return ExternalListingState.Waiting;
-
-        if (search->WaitingForListings || search->SearchItemId != selectedIdentity.ItemId)
-            return ExternalListingState.Waiting;
-
-        if (!TryGetOwnedRetainerIds(search, out HashSet<ulong> ownedRetainerIds))
-            return ExternalListingState.Waiting;
-
-        int resultCount = Math.Min((int)search->ListingCount, 100);
-        uint lowestPrice = uint.MaxValue;
-        int lowestIndex = -1;
-        ulong lowestRetainer = 0;
-        for (int i = 0; i < resultCount; i++)
+        if (search != null && TryGetOwnedRetainerIds(search, out HashSet<ulong> ownedIds))
         {
-            MarketBoardListing listing = search->Listings[i];
-            if (listing.ItemId != selectedIdentity.ItemId ||
-                listing.IsHqItem != selectedIdentity.IsHighQuality ||
-                listing.RetainerId == 0 ||
-                ownedRetainerIds.Contains(listing.RetainerId) ||
-                listing.UnitPrice == 0 ||
-                listing.UnitPrice >= lowestPrice)
-                continue;
+            int resultCount = Math.Min(Math.Min((int)search->ListingCount, addon->Results->GetItemCount()), 100);
+            uint lowestPrice = uint.MaxValue;
+            int lowestIndex = -1;
+            ulong lowestRetainer = 0;
+            bool foundSelectedItem = false;
+            for (int i = 0; i < resultCount; i++)
+            {
+                MarketBoardListing listing = search->Listings[i];
+                if (listing.ItemId != selectedIdentity.ItemId ||
+                    listing.IsHqItem != selectedIdentity.IsHighQuality)
+                    continue;
 
-            lowestPrice = listing.UnitPrice;
-            lowestIndex = i;
-            lowestRetainer = listing.RetainerId;
+                foundSelectedItem = true;
+                if (listing.RetainerId == 0 || ownedIds.Contains(listing.RetainerId) ||
+                    listing.UnitPrice == 0 || listing.UnitPrice >= lowestPrice)
+                    continue;
+
+                lowestPrice = listing.UnitPrice;
+                lowestIndex = i;
+                lowestRetainer = listing.RetainerId;
+            }
+
+            // SearchItemId is intentionally not consulted here. FFXIV can clear it while the
+            // result window and its listing array remain valid, especially on the second row.
+            if (foundSelectedItem)
+            {
+                if (lowestIndex < 0)
+                    return ExternalListingState.None;
+
+                result = new ExternalMarketListing(
+                    lowestIndex,
+                    lowestPrice,
+                    lowestRetainer,
+                    GetMarketResultRetainerName(addon, lowestIndex));
+                return ExternalListingState.Ready;
+            }
         }
 
-        if (lowestIndex < 0)
+        // If the game has already released the backing listing array, the visible market rows
+        // are still authoritative. Read those instead of blocking an otherwise valid result.
+        if (!TryGetOwnedRetainerNames(out HashSet<string> ownedRetainerNames))
+            return ExternalListingState.Waiting;
+
+        int visibleResultCount = Math.Min(addon->Results->GetItemCount(), 100);
+        uint fallbackLowestPrice = uint.MaxValue;
+        int fallbackLowestIndex = -1;
+        string fallbackLowestRetainer = string.Empty;
+        for (int i = 0; i < visibleResultCount; i++)
+        {
+            addon->Results->ScrollToItem((short)i);
+            addon->Results->UpdateListItems();
+            AtkComponentListItemRenderer* renderer = addon->Results->GetItemRenderer(i);
+            AtkTextNode* priceNode = renderer == null ? null : renderer->GetTextNodeById(5);
+            AtkTextNode* retainerNode = renderer == null ? null : renderer->GetTextNodeById(10);
+            AtkImageNode* hqNode = renderer == null ? null : renderer->GetImageNodeById(3);
+            if (priceNode == null || retainerNode == null || hqNode == null ||
+                !TryParseMarketPrice(priceNode->NodeText.ToString(), out uint unitPrice))
+                return ExternalListingState.Waiting;
+
+            string retainerName = retainerNode->NodeText.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(retainerName))
+                return ExternalListingState.Waiting;
+
+            bool isHighQuality = hqNode->AtkResNode.IsVisible();
+            if (isHighQuality != selectedIdentity.IsHighQuality ||
+                ownedRetainerNames.Contains(retainerName) ||
+                unitPrice >= fallbackLowestPrice)
+                continue;
+
+            fallbackLowestPrice = unitPrice;
+            fallbackLowestIndex = i;
+            fallbackLowestRetainer = retainerName;
+        }
+
+        if (fallbackLowestIndex < 0)
             return ExternalListingState.None;
 
         result = new ExternalMarketListing(
-            lowestIndex,
-            lowestPrice,
-            lowestRetainer,
-            GetMarketResultRetainerName(addon, lowestIndex));
+            fallbackLowestIndex,
+            fallbackLowestPrice,
+            0,
+            fallbackLowestRetainer);
         return ExternalListingState.Ready;
     }
 
@@ -511,6 +526,26 @@ internal sealed unsafe class RetainerMarketUi
         return Math.Abs(r - expectedR) <= 3 && Math.Abs(g - expectedG) <= 3 && Math.Abs(b - expectedB) <= 3;
     }
 
+    private static bool TryGetOwnedRetainerNames(out HashSet<string> result)
+    {
+        result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        RetainerManager* manager = RetainerManager.Instance();
+        if (manager == null)
+            return false;
+
+        RetainerManager.Retainer* active = manager->GetActiveRetainer();
+        if (active != null && !string.IsNullOrWhiteSpace(active->NameString))
+            result.Add(active->NameString.Trim());
+
+        foreach (RetainerManager.Retainer retainer in manager->Retainers)
+        {
+            if (retainer.RetainerId != 0 && !string.IsNullOrWhiteSpace(retainer.NameString))
+                result.Add(retainer.NameString.Trim());
+        }
+
+        return result.Count > 0;
+    }
+
     private bool TryGetOwnedRetainerIds(InfoProxyItemSearch* search, out HashSet<ulong> result)
     {
         var liveRetainerIds = new HashSet<ulong>();
@@ -524,15 +559,13 @@ internal sealed unsafe class RetainerMarketUi
             int assignedRetainerCount = 0;
             foreach (RetainerManager.Retainer retainer in manager->Retainers)
             {
-                if (retainer.RetainerId != 0)
-                {
-                    assignedRetainerCount++;
-                    liveRetainerIds.Add(retainer.RetainerId);
-                }
+                if (retainer.RetainerId == 0)
+                    continue;
+
+                assignedRetainerCount++;
+                liveRetainerIds.Add(retainer.RetainerId);
             }
 
-            // IsReady can briefly clear while moving between market searches even though the
-            // populated retainer array is still authoritative for this active retainer session.
             completeRetainerListAvailable = manager->IsReady || assignedRetainerCount > 0;
         }
 
@@ -554,6 +587,20 @@ internal sealed unsafe class RetainerMarketUi
 
         result = [.. ownedRetainerIds];
         return result.Count > 0;
+    }
+
+    private static bool TryParseMarketPrice(string text, out uint price)
+    {
+        price = 0;
+        Span<char> digits = stackalloc char[text.Length];
+        int count = 0;
+        foreach (char character in text)
+        {
+            if (char.IsAsciiDigit(character))
+                digits[count++] = character;
+        }
+
+        return count > 0 && uint.TryParse(digits[..count], out price) && price > 0;
     }
 
     private string GetListingName(int visualIndex, uint itemId)
@@ -586,4 +633,5 @@ internal sealed unsafe class RetainerMarketUi
         string name = text == null ? string.Empty : text->NodeText.ToString().Trim();
         return string.IsNullOrWhiteSpace(name) ? "External retainer" : name;
     }
+
 }

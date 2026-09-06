@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0.9
+
+- Removed the invalid market-search identity gate that rejected a fully loaded second result window when FFXIV cleared its transient search ID.
+- Validate the selected item against the returned listings themselves and fall back to the visible prices, HQ status, and retainer names if FFXIV has already released its backing search data.
+
 ## 1.0.0.8
 
 - Read market results from FFXIV's global Item Search data instead of the transient Item Search agent pointer, which becomes unavailable after the first Marketbuddy comparison.

@@ -286,21 +286,6 @@ internal sealed class MarketAutomationController : IDisposable
                     return;
                 }
 
-                if (!ui.TryAlignListingWithMarketSearch(currentListing, out RetainerListingSnapshot alignedListing))
-                {
-                    WaitOrFail(MarketDataTimeout, "the current market search identity");
-                    return;
-                }
-                if (alignedListing.Identity != currentListing.Identity)
-                {
-                    log.Warning(
-                        "Corrected stale selected listing identity for row {Row}: {OldItemId} -> {SearchItemId}",
-                        rows[position], currentListing.Identity.ItemId, alignedListing.Identity.ItemId);
-                    currentListing = alignedListing;
-                    if (currentAdjustmentRetryCount == 0)
-                        originalListing = alignedListing;
-                }
-
                 if (marketResults == MarketResultsState.ReadyWithoutListings)
                 {
                     if (!Expired(EmptyResultConfirmation))
