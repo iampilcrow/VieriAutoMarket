@@ -94,7 +94,7 @@ internal sealed class SettingsWindow : Window
         ImGui.TableSetupColumn("Quality", ImGuiTableColumnFlags.WidthFixed, 55);
         ImGui.TableSetupColumn("Old", ImGuiTableColumnFlags.WidthFixed, 80);
         ImGui.TableSetupColumn("Competitor", ImGuiTableColumnFlags.WidthFixed, 110);
-        ImGui.TableSetupColumn("External price", ImGuiTableColumnFlags.WidthFixed, 90);
+        ImGui.TableSetupColumn("Reference price", ImGuiTableColumnFlags.WidthFixed, 95);
         ImGui.TableSetupColumn("Final", ImGuiTableColumnFlags.WidthFixed, 80);
         ImGui.TableSetupColumn("Outcome", ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableHeadersRow();

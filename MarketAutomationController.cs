@@ -36,12 +36,14 @@ internal sealed class MarketAutomationController : IDisposable
     private int skippedNoCompetitorCount;
     private int skippedAlreadyCompetitiveCount;
     private int failedAdjustmentCount;
+    private int ownedPriceMatchCount;
     private int currentRowRetryCount;
     private int currentAdjustmentRetryCount;
     private int currentSearchThrottleRetries;
     private RetainerListingSnapshot currentListing;
     private RetainerListingSnapshot originalListing;
     private ExternalMarketListing currentCompetitor;
+    private bool matchingOwnedRetainer;
     private string pendingSkipOutcome = string.Empty;
     private bool searchThrottleRejected;
 
@@ -112,12 +114,14 @@ internal sealed class MarketAutomationController : IDisposable
         skippedNoCompetitorCount = 0;
         skippedAlreadyCompetitiveCount = 0;
         failedAdjustmentCount = 0;
+        ownedPriceMatchCount = 0;
         currentRowRetryCount = 0;
         currentAdjustmentRetryCount = 0;
         currentSearchThrottleRetries = 0;
         currentListing = default;
         originalListing = default;
         currentCompetitor = default;
+        matchingOwnedRetainer = false;
         pendingSkipOutcome = string.Empty;
         skipAdjustmentAfterClose = false;
         adjustmentPass = mode == AutomationMode.Adjust;
@@ -308,6 +312,7 @@ internal sealed class MarketAutomationController : IDisposable
                 {
                     originalListing = currentListing;
                     currentCompetitor = default;
+                    matchingOwnedRetainer = false;
                     pendingSkipOutcome = string.Empty;
                 }
                 MoveTo(AutomationStep.WaitForMarketResults);
@@ -327,7 +332,7 @@ internal sealed class MarketAutomationController : IDisposable
                 {
                     if (!Expired(EmptyResultConfirmation))
                         return;
-                    RecordAssessment(currentListing, 0);
+                    RecordAssessment(currentListing, 0, 0);
                     skipAdjustmentAfterClose = adjustmentPass;
                     pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
                     if (!adjustmentPass)
@@ -341,9 +346,11 @@ internal sealed class MarketAutomationController : IDisposable
                     return;
                 }
 
-                ExternalListingState externalState = ui.GetBestExternalMarketListing(
+                ExternalListingState externalState = ui.GetMarketPriceSnapshot(
                     currentListing.Identity,
-                    out ExternalMarketListing externalListing);
+                    currentListing.RetainerId,
+                    currentListing.RetainerName,
+                    out MarketPriceSnapshot priceSnapshot);
                 if (externalState == ExternalListingState.Waiting)
                 {
                     WaitOrFail(MarketDataTimeout, "market ownership and quality details");
@@ -352,7 +359,7 @@ internal sealed class MarketAutomationController : IDisposable
 
                 if (externalState == ExternalListingState.None)
                 {
-                    RecordAssessment(currentListing, 0);
+                    RecordAssessment(currentListing, 0, 0);
                     skipAdjustmentAfterClose = adjustmentPass;
                     pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
                     if (!adjustmentPass)
@@ -366,32 +373,105 @@ internal sealed class MarketAutomationController : IDisposable
                     return;
                 }
 
-                currentCompetitor = externalListing;
-                RecordAssessment(currentListing, currentCompetitor.UnitPrice);
+                uint externalPrice = priceSnapshot.BestExternal.UnitPrice;
+                uint otherOwnedPrice = priceSnapshot.BestOtherOwned.UnitPrice;
+                MarketPricingAction pricingAction = MarketPricingDecision.Choose(
+                    currentListing.UnitPrice,
+                    externalPrice,
+                    otherOwnedPrice);
+                RecordAssessment(currentListing, externalPrice, otherOwnedPrice);
                 if (!adjustmentPass)
                 {
-                    AddReport(currentListing, currentCompetitor.UnitPrice, currentListing.UnitPrice,
-                        currentListing.UnitPrice <= currentCompetitor.UnitPrice
-                            ? "Checked: current against the external market"
-                            : "Checked: undercut by an external seller",
-                        currentCompetitor.RetainerName);
+                    ExternalMarketListing checkReference = pricingAction == MarketPricingAction.MatchOtherOwned
+                        ? priceSnapshot.BestOtherOwned
+                        : priceSnapshot.BestExternal;
+                    string checkOutcome = pricingAction switch
+                    {
+                        MarketPricingAction.MatchOtherOwned =>
+                            "Checked: a lower owned retainer is market-lowest; exact price match recommended",
+                        MarketPricingAction.UndercutExternal => "Checked: undercut by an external seller",
+                        _ when priceSnapshot.HasExternal => "Checked: current against the external market",
+                        _ when priceSnapshot.HasOtherOwned =>
+                            "Checked: already at or below the lowest price on another owned retainer",
+                        _ => "Checked: no competing listing",
+                    };
+                    AddReport(currentListing, checkReference.UnitPrice, currentListing.UnitPrice,
+                        checkOutcome, checkReference.RetainerName);
                 }
 
-                if (adjustmentPass && currentListing.UnitPrice <= currentCompetitor.UnitPrice)
+                if (adjustmentPass && pricingAction == MarketPricingAction.None)
                 {
+                    currentCompetitor = priceSnapshot.HasExternal
+                        ? priceSnapshot.BestExternal
+                        : priceSnapshot.BestOtherOwned;
                     skipAdjustmentAfterClose = true;
-                    pendingSkipOutcome = "Unchanged: already at or below the cheapest external competitor";
-                    Status = $"Item {position + 1} of {rows.Length} is already competitive; ignoring lower prices from your own retainers";
+                    pendingSkipOutcome = priceSnapshot.HasExternal
+                        ? "Unchanged: already at or below the cheapest external competitor"
+                        : "Unchanged: already at or below the lowest price on another owned retainer";
+                    Status = $"Item {position + 1} of {rows.Length} is already at the correct competitive price";
                     MoveTo(AutomationStep.CloseMarketResults,
                         TimeSpan.FromMilliseconds(Math.Max(350, config.ActionDelayMilliseconds)));
                     return;
                 }
+
+                if (adjustmentPass && pricingAction == MarketPricingAction.MatchOtherOwned)
+                {
+                    currentCompetitor = priceSnapshot.BestOtherOwned;
+                    matchingOwnedRetainer = true;
+                    Status = $"Matching {currentCompetitor.RetainerName}'s lowest owned price for item {position + 1} of {rows.Length}";
+                    MoveTo(AutomationStep.CloseMarketResultsForOwnedMatch,
+                        TimeSpan.FromMilliseconds(Math.Max(350, config.ActionDelayMilliseconds)));
+                    return;
+                }
+
+                currentCompetitor = priceSnapshot.BestExternal;
+                matchingOwnedRetainer = false;
 
                 Status = adjustmentPass
                     ? $"Applying Marketbuddy pricing against an external seller for item {position + 1} of {rows.Length}"
                     : $"Allagan Market checked item {position + 1} of {rows.Length}";
                 MoveTo(adjustmentPass ? AutomationStep.ClickBestListing : AutomationStep.CloseMarketResults,
                     TimeSpan.FromMilliseconds(Math.Max(350, config.ActionDelayMilliseconds)));
+                break;
+
+            case AutomationStep.CloseMarketResultsForOwnedMatch:
+                if (!ui.Close("ItemSearchResult"))
+                {
+                    Fail("Could not close market results before matching the owned-retainer price.");
+                    return;
+                }
+                MoveTo(AutomationStep.SetOwnedMatchPrice);
+                break;
+
+            case AutomationStep.SetOwnedMatchPrice:
+                if (!ui.IsReady("RetainerSell"))
+                {
+                    WaitOrFail(WindowTimeout, "the Adjust Price window for an owned-retainer match");
+                    return;
+                }
+                if (!ui.SetAskingPrice(currentCompetitor.UnitPrice))
+                {
+                    Fail("Could not enter the exact owned-retainer price.");
+                    return;
+                }
+                MoveTo(AutomationStep.ConfirmOwnedMatchPrice, TimeSpan.FromMilliseconds(250));
+                break;
+
+            case AutomationStep.ConfirmOwnedMatchPrice:
+                if (!ui.TryGetSelectedListingSnapshot(rows[position], out RetainerListingSnapshot pendingOwnedMatch) ||
+                    pendingOwnedMatch.Identity != originalListing.Identity ||
+                    pendingOwnedMatch.RetainerId != originalListing.RetainerId ||
+                    pendingOwnedMatch.UnitPrice != currentCompetitor.UnitPrice)
+                {
+                    WaitOrFail(WindowTimeout, "the exact owned-retainer price to appear");
+                    return;
+                }
+                if (!ui.ConfirmAskingPrice())
+                {
+                    WaitOrFail(WindowTimeout, "the owned-retainer price confirmation button");
+                    return;
+                }
+                MoveTo(AutomationStep.WaitForAdjustment);
                 break;
 
             case AutomationStep.RecoverFromSearchThrottle:
@@ -491,17 +571,19 @@ internal sealed class MarketAutomationController : IDisposable
                 break;
 
             case AutomationStep.ClickBestListing:
-                ExternalListingState refreshedState = ui.GetBestExternalMarketListing(
+                ExternalListingState refreshedState = ui.GetMarketPriceSnapshot(
                     currentListing.Identity,
-                    out ExternalMarketListing refreshedCompetitor);
+                    currentListing.RetainerId,
+                    currentListing.RetainerName,
+                    out MarketPriceSnapshot refreshedSnapshot);
                 if (refreshedState == ExternalListingState.Waiting)
                 {
-                    WaitOrFail(MarketDataTimeout, "a verified external market listing");
+                    WaitOrFail(MarketDataTimeout, "verified market ownership and price details");
                     return;
                 }
                 if (refreshedState == ExternalListingState.None)
                 {
-                    RecordAssessment(currentListing, 0);
+                    RecordAssessment(currentListing, 0, 0);
                     currentCompetitor = default;
                     pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
                     skipAdjustmentAfterClose = true;
@@ -509,8 +591,32 @@ internal sealed class MarketAutomationController : IDisposable
                     return;
                 }
 
-                currentCompetitor = refreshedCompetitor;
-                RecordAssessment(currentListing, currentCompetitor.UnitPrice);
+                MarketPricingAction refreshedAction = MarketPricingDecision.Choose(
+                    currentListing.UnitPrice,
+                    refreshedSnapshot.BestExternal.UnitPrice,
+                    refreshedSnapshot.BestOtherOwned.UnitPrice);
+                RecordAssessment(currentListing, refreshedSnapshot.BestExternal.UnitPrice,
+                    refreshedSnapshot.BestOtherOwned.UnitPrice);
+                if (refreshedAction == MarketPricingAction.MatchOtherOwned)
+                {
+                    currentCompetitor = refreshedSnapshot.BestOtherOwned;
+                    matchingOwnedRetainer = true;
+                    MoveTo(AutomationStep.CloseMarketResultsForOwnedMatch, TimeSpan.FromMilliseconds(250));
+                    return;
+                }
+                if (refreshedAction != MarketPricingAction.UndercutExternal)
+                {
+                    currentCompetitor = refreshedSnapshot.HasExternal
+                        ? refreshedSnapshot.BestExternal
+                        : refreshedSnapshot.BestOtherOwned;
+                    pendingSkipOutcome = "Unchanged: market prices changed and this listing is already competitive";
+                    skipAdjustmentAfterClose = true;
+                    MoveTo(AutomationStep.CloseMarketResults, TimeSpan.FromMilliseconds(350));
+                    return;
+                }
+
+                currentCompetitor = refreshedSnapshot.BestExternal;
+                matchingOwnedRetainer = false;
                 if (!ui.ClickMarketListing(currentCompetitor.ResultIndex))
                 {
                     Fail("The cheapest verified external market listing could not be selected.");
@@ -540,14 +646,20 @@ internal sealed class MarketAutomationController : IDisposable
                 bool sameListing = verifiedListing.Identity == originalListing.Identity &&
                                    verifiedListing.RetainerId == originalListing.RetainerId;
                 bool validPrice = sameListing && verifiedListing.UnitPrice > 0 &&
-                                  verifiedListing.UnitPrice <= currentCompetitor.UnitPrice;
+                                  (matchingOwnedRetainer
+                                      ? verifiedListing.UnitPrice == currentCompetitor.UnitPrice
+                                      : verifiedListing.UnitPrice <= currentCompetitor.UnitPrice);
                 if (validPrice)
                 {
-                    string outcome = verifiedListing.UnitPrice == originalListing.UnitPrice
-                        ? "Verified: already priced at or below the external competitor"
-                        : "Updated through Marketbuddy and verified";
+                    string outcome = matchingOwnedRetainer
+                        ? "Matched the lowest owned-retainer price exactly and verified"
+                        : verifiedListing.UnitPrice == originalListing.UnitPrice
+                            ? "Verified: already priced at or below the external competitor"
+                            : "Updated through Marketbuddy and verified";
                     AddReport(originalListing, currentCompetitor.UnitPrice, verifiedListing.UnitPrice, outcome,
                         currentCompetitor.RetainerName);
+                    if (matchingOwnedRetainer)
+                        ownedPriceMatchCount++;
                     AdvanceOrCompleteAdjustment(adjusted: true);
                     break;
                 }
@@ -604,6 +716,7 @@ internal sealed class MarketAutomationController : IDisposable
         currentListing = default;
         originalListing = default;
         currentCompetitor = default;
+        matchingOwnedRetainer = false;
         pendingSkipOutcome = string.Empty;
         if (position < rows.Length)
         {
@@ -620,10 +733,15 @@ internal sealed class MarketAutomationController : IDisposable
         string failed = failedAdjustmentCount > 0
             ? $" {failedAdjustmentCount} listing(s) failed ownership or final-price verification."
             : string.Empty;
-        Complete($"Pricing adjustment complete: {adjustedCount} undercut listing(s) updated through Marketbuddy.{skipped}{competitive}{failed}");
+        int externalAdjustments = adjustedCount - ownedPriceMatchCount;
+        string ownedMatches = ownedPriceMatchCount > 0
+            ? $" {ownedPriceMatchCount} listing(s) matched the market-lowest price from another owned retainer."
+            : string.Empty;
+        Complete($"Pricing adjustment complete: {adjustedCount} listing(s) updated; {externalAdjustments} through Marketbuddy.{ownedMatches}{skipped}{competitive}{failed}");
     }
 
-    private void RecordAssessment(RetainerListingSnapshot listing, uint cheapestExternalPrice)
+    private void RecordAssessment(RetainerListingSnapshot listing, uint cheapestExternalPrice,
+        uint cheapestOtherOwnedPrice)
     {
         config.MarketAssessments.RemoveAll(x =>
             x.RetainerId == listing.RetainerId && x.VisualIndex == listing.VisualIndex);
@@ -635,6 +753,7 @@ internal sealed class MarketAutomationController : IDisposable
             RetainerId = listing.RetainerId,
             OwnedUnitPrice = listing.UnitPrice,
             CheapestExternalPrice = cheapestExternalPrice,
+            CheapestOtherOwnedPrice = cheapestOtherOwnedPrice,
             CheckedAt = DateTime.UtcNow,
         });
         config.MarketAssessments.RemoveAll(x => x.CheckedAt < DateTime.UtcNow - TimeSpan.FromDays(1));
@@ -660,7 +779,7 @@ internal sealed class MarketAutomationController : IDisposable
         };
         runReport.Add(entry);
         log.Information(
-            "Market result: {Item} ({Quality}) on {Retainer}: {OldPrice} -> {FinalPrice}; external {Competitor} at {CompetitorPrice}; {Outcome}",
+            "Market result: {Item} ({Quality}) on {Retainer}: {OldPrice} -> {FinalPrice}; reference {Competitor} at {CompetitorPrice}; {Outcome}",
             entry.Item, entry.Quality, entry.Retainer, entry.OldPrice, entry.FinalPrice,
             string.IsNullOrWhiteSpace(entry.Competitor) ? "none" : entry.Competitor,
             entry.CompetitorPrice, entry.Outcome);

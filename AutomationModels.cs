@@ -18,6 +18,9 @@ internal enum AutomationStep
     WaitForPriceWindow,
     WaitForMarketResults,
     RecoverFromSearchThrottle,
+    CloseMarketResultsForOwnedMatch,
+    SetOwnedMatchPrice,
+    ConfirmOwnedMatchPrice,
     CloseMarketResults,
     WaitForPriceWindowAfterCheck,
     ClosePriceWindow,
@@ -71,6 +74,36 @@ internal readonly record struct ExternalMarketListing(
     ulong RetainerId,
     string RetainerName);
 
+internal readonly record struct MarketPriceSnapshot(
+    ExternalMarketListing BestExternal,
+    ExternalMarketListing BestOtherOwned)
+{
+    internal bool HasExternal => BestExternal.UnitPrice > 0;
+    internal bool HasOtherOwned => BestOtherOwned.UnitPrice > 0;
+}
+
+internal enum MarketPricingAction
+{
+    None,
+    MatchOtherOwned,
+    UndercutExternal,
+}
+
+internal static class MarketPricingDecision
+{
+    internal static MarketPricingAction Choose(uint currentPrice, uint externalPrice, uint otherOwnedPrice)
+    {
+        if (otherOwnedPrice > 0 && otherOwnedPrice < currentPrice &&
+            (externalPrice == 0 || otherOwnedPrice <= externalPrice))
+            return MarketPricingAction.MatchOtherOwned;
+
+        if (externalPrice > 0 && currentPrice > externalPrice)
+            return MarketPricingAction.UndercutExternal;
+
+        return MarketPricingAction.None;
+    }
+}
+
 public sealed class MarketRunReportEntry
 {
     public string Item { get; set; } = string.Empty;
@@ -91,6 +124,7 @@ public sealed class OwnedAwareMarketAssessment
     public ulong RetainerId { get; set; }
     public uint OwnedUnitPrice { get; set; }
     public uint CheapestExternalPrice { get; set; }
+    public uint CheapestOtherOwnedPrice { get; set; }
     public DateTime CheckedAt { get; set; }
 }
 

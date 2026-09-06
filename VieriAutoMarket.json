@@ -3,7 +3,7 @@
   "Name": "VieriAutoMarket",
   "InternalName": "VieriAutoMarket",
   "Punchline": "Safe, guided undercut checking and repricing for retainer listings.",
-  "Description": "Adds one-click retainer market tools that use Allagan Market to identify undercuts and Marketbuddy to apply your configured pricing rules. Owned retainers are excluded from competitor selection, duplicate prices are coordinated, and every saved price is verified.",
+  "Description": "Adds one-click retainer market tools that use Allagan Market to identify undercuts and Marketbuddy to apply your configured pricing rules. Duplicate listings across owned retainers match the lowest owned price exactly when it leads the market, and every saved price is verified.",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
   "IconUrl": "https://www.thedailypilcrow.com/dalamud/assets/VieriLogo.png",

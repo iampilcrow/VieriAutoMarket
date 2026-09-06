@@ -1,3 +1,6 @@
+using static VieriAutoMarket.MarketPricingAction;
+using VieriAutoMarket;
+
 var origin = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc);
 var pacer = new VieriAutoMarket.MarketSearchPacer(
     TimeSpan.FromMilliseconds(2500),
@@ -14,4 +17,13 @@ if (!pacer.CanStart(origin.AddMilliseconds(6600))) throw new Exception("Rejected
 if (!VieriAutoMarket.MarketSearchPacer.IsThrottleMessage("Please wait and try your search again.")) throw new Exception("Throttle message was not recognized");
 if (VieriAutoMarket.MarketSearchPacer.IsThrottleMessage("Market search complete.")) throw new Exception("Unrelated message was treated as a throttle");
 
-Console.WriteLine("8 market-search pacing and rejection checks passed.");
+if (MarketPricingDecision.Choose(200, 0, 100) != MatchOtherOwned) throw new Exception("Owned-only lowest price was not matched");
+if (MarketPricingDecision.Choose(200, 150, 100) != MatchOtherOwned) throw new Exception("Market-lowest owned price was not preferred");
+if (MarketPricingDecision.Choose(200, 100, 150) != UndercutExternal) throw new Exception("Lower external seller was not undercut");
+if (MarketPricingDecision.Choose(200, 100, 100) != MatchOtherOwned) throw new Exception("Owned listing tied for lowest was not matched");
+if (MarketPricingDecision.Choose(100, 0, 100) != None) throw new Exception("Equal owned price caused a redundant update");
+if (MarketPricingDecision.Choose(90, 0, 100) != None) throw new Exception("A lower current price was raised");
+if (MarketPricingDecision.Choose(90, 100, 0) != None) throw new Exception("Competitive external price caused an update");
+if (MarketPricingDecision.Choose(200, 0, 0) != None) throw new Exception("Missing references caused an update");
+
+Console.WriteLine("16 market pacing and owned-retainer pricing checks passed.");

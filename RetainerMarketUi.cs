@@ -288,9 +288,11 @@ internal sealed unsafe class RetainerMarketUi
             : MarketResultsState.Waiting;
     }
 
-    internal ExternalListingState GetBestExternalMarketListing(
+    internal ExternalListingState GetMarketPriceSnapshot(
         MarketListingIdentity selectedIdentity,
-        out ExternalMarketListing result)
+        ulong currentRetainerId,
+        string currentRetainerName,
+        out MarketPriceSnapshot result)
     {
         result = default;
         AddonItemSearchResult* addon = (AddonItemSearchResult*)GetAddon("ItemSearchResult");
@@ -304,6 +306,9 @@ internal sealed unsafe class RetainerMarketUi
             uint lowestPrice = uint.MaxValue;
             int lowestIndex = -1;
             ulong lowestRetainer = 0;
+            uint lowestOwnedPrice = uint.MaxValue;
+            int lowestOwnedIndex = -1;
+            ulong lowestOwnedRetainer = 0;
             bool foundSelectedItem = false;
             for (int i = 0; i < resultCount; i++)
             {
@@ -313,8 +318,21 @@ internal sealed unsafe class RetainerMarketUi
                     continue;
 
                 foundSelectedItem = true;
-                if (listing.RetainerId == 0 || ownedIds.Contains(listing.RetainerId) ||
-                    listing.UnitPrice == 0 || listing.UnitPrice >= lowestPrice)
+                if (listing.RetainerId == 0 || listing.UnitPrice == 0)
+                    continue;
+
+                if (ownedIds.Contains(listing.RetainerId))
+                {
+                    if (listing.RetainerId == currentRetainerId || listing.UnitPrice >= lowestOwnedPrice)
+                        continue;
+
+                    lowestOwnedPrice = listing.UnitPrice;
+                    lowestOwnedIndex = i;
+                    lowestOwnedRetainer = listing.RetainerId;
+                    continue;
+                }
+
+                if (listing.UnitPrice >= lowestPrice)
                     continue;
 
                 lowestPrice = listing.UnitPrice;
@@ -326,14 +344,24 @@ internal sealed unsafe class RetainerMarketUi
             // result window and its listing array remain valid, especially on the second row.
             if (foundSelectedItem)
             {
-                if (lowestIndex < 0)
+                if (lowestIndex < 0 && lowestOwnedIndex < 0)
                     return ExternalListingState.None;
 
-                result = new ExternalMarketListing(
-                    lowestIndex,
-                    lowestPrice,
-                    lowestRetainer,
-                    GetMarketResultRetainerName(addon, lowestIndex));
+                ExternalMarketListing external = lowestIndex < 0
+                    ? default
+                    : new ExternalMarketListing(
+                        lowestIndex,
+                        lowestPrice,
+                        lowestRetainer,
+                        GetMarketResultRetainerName(addon, lowestIndex));
+                ExternalMarketListing otherOwned = lowestOwnedIndex < 0
+                    ? default
+                    : new ExternalMarketListing(
+                        lowestOwnedIndex,
+                        lowestOwnedPrice,
+                        lowestOwnedRetainer,
+                        GetMarketResultRetainerName(addon, lowestOwnedIndex));
+                result = new MarketPriceSnapshot(external, otherOwned);
                 return ExternalListingState.Ready;
             }
         }
@@ -347,6 +375,9 @@ internal sealed unsafe class RetainerMarketUi
         uint fallbackLowestPrice = uint.MaxValue;
         int fallbackLowestIndex = -1;
         string fallbackLowestRetainer = string.Empty;
+        uint fallbackLowestOwnedPrice = uint.MaxValue;
+        int fallbackLowestOwnedIndex = -1;
+        string fallbackLowestOwnedRetainer = string.Empty;
         for (int i = 0; i < visibleResultCount; i++)
         {
             addon->Results->ScrollToItem((short)i);
@@ -364,9 +395,22 @@ internal sealed unsafe class RetainerMarketUi
                 return ExternalListingState.Waiting;
 
             bool isHighQuality = hqNode->AtkResNode.IsVisible();
-            if (isHighQuality != selectedIdentity.IsHighQuality ||
-                ownedRetainerNames.Contains(retainerName) ||
-                unitPrice >= fallbackLowestPrice)
+            if (isHighQuality != selectedIdentity.IsHighQuality)
+                continue;
+
+            if (ownedRetainerNames.Contains(retainerName))
+            {
+                if (retainerName.Equals(currentRetainerName, StringComparison.OrdinalIgnoreCase) ||
+                    unitPrice >= fallbackLowestOwnedPrice)
+                    continue;
+
+                fallbackLowestOwnedPrice = unitPrice;
+                fallbackLowestOwnedIndex = i;
+                fallbackLowestOwnedRetainer = retainerName;
+                continue;
+            }
+
+            if (unitPrice >= fallbackLowestPrice)
                 continue;
 
             fallbackLowestPrice = unitPrice;
@@ -374,14 +418,24 @@ internal sealed unsafe class RetainerMarketUi
             fallbackLowestRetainer = retainerName;
         }
 
-        if (fallbackLowestIndex < 0)
+        if (fallbackLowestIndex < 0 && fallbackLowestOwnedIndex < 0)
             return ExternalListingState.None;
 
-        result = new ExternalMarketListing(
-            fallbackLowestIndex,
-            fallbackLowestPrice,
-            0,
-            fallbackLowestRetainer);
+        ExternalMarketListing fallbackExternal = fallbackLowestIndex < 0
+            ? default
+            : new ExternalMarketListing(
+                fallbackLowestIndex,
+                fallbackLowestPrice,
+                0,
+                fallbackLowestRetainer);
+        ExternalMarketListing fallbackOwned = fallbackLowestOwnedIndex < 0
+            ? default
+            : new ExternalMarketListing(
+                fallbackLowestOwnedIndex,
+                fallbackLowestOwnedPrice,
+                0,
+                fallbackLowestOwnedRetainer);
+        result = new MarketPriceSnapshot(fallbackExternal, fallbackOwned);
         return ExternalListingState.Ready;
     }
 
@@ -395,6 +449,29 @@ internal sealed unsafe class RetainerMarketUi
         addon->Results->ScrollToItem((short)resultIndex);
         addon->Results->UpdateListItems();
         addon->Results->DispatchItemEvent(resultIndex, AtkEventType.ListItemClick);
+        return true;
+    }
+
+    internal bool SetAskingPrice(uint unitPrice)
+    {
+        AddonRetainerSell* addon = (AddonRetainerSell*)GetAddon("RetainerSell");
+        if (addon == null || !addon->IsVisible || unitPrice == 0 || unitPrice > int.MaxValue)
+            return false;
+
+        new AddonMaster.RetainerSell(addon).AskingPrice = (int)unitPrice;
+        return true;
+    }
+
+    internal bool ConfirmAskingPrice()
+    {
+        AddonRetainerSell* addon = (AddonRetainerSell*)GetAddon("RetainerSell");
+        if (addon == null || !addon->IsVisible)
+            return false;
+
+        var master = new AddonMaster.RetainerSell(addon);
+        if (master.ConfirmButton == null || !master.ConfirmButton->IsEnabled)
+            return false;
+        master.Confirm();
         return true;
     }
 
@@ -501,8 +578,12 @@ internal sealed unsafe class RetainerMarketUi
                 continue;
 
             bool currentAgainstExternalMarket = assessment.CheapestExternalPrice == 0 ||
-                                                assessment.OwnedUnitPrice <= assessment.CheapestExternalPrice;
-            if (!currentAgainstExternalMarket)
+                                                 assessment.OwnedUnitPrice <= assessment.CheapestExternalPrice;
+            bool needsOwnedPriceMatch = assessment.CheapestOtherOwnedPrice > 0 &&
+                                        assessment.OwnedUnitPrice > assessment.CheapestOtherOwnedPrice &&
+                                        (assessment.CheapestExternalPrice == 0 ||
+                                         assessment.CheapestOtherOwnedPrice <= assessment.CheapestExternalPrice);
+            if (!currentAgainstExternalMarket || needsOwnedPriceMatch)
                 continue;
 
             text->TextColor = normalItemColors.TryGetValue(assessment.ItemId, out ByteColor normal)

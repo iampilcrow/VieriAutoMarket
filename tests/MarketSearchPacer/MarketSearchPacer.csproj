@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../MarketSearchPacer.cs" Link="MarketSearchPacer.cs" />
+    <Compile Include="../../AutomationModels.cs" Link="AutomationModels.cs" />
   </ItemGroup>
 </Project>

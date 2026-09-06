@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0.11
+
+- Match a lower price from another owned retainer exactly when that owned listing is currently the market-lowest listing.
+- Keep external sellers on the existing Marketbuddy undercut rule and never raise a listing that is already lower.
+- Verify the exact saved price before continuing and identify owned-retainer matches separately in the run report.
+
 ## 1.0.0.10
 
 - Enforce a safe minimum interval between market-board comparison requests so FFXIV does not reject overlapping searches with “Please wait and try your search again.”
