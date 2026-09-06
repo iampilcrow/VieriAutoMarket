@@ -60,10 +60,10 @@ internal sealed unsafe class MarketToolbarWindow : Window
         if (IconButton(FontAwesomeIcon.Search, "Check", "Check For Undercuts\nRefresh listings and distinguish external sellers from your own retainers"))
             automation.Start(AutomationMode.Check);
         ImGui.SameLine();
-        if (IconButton(FontAwesomeIcon.Edit, "Adjust", "Adjust Undercut Pricing\nReprice red listings against the cheapest matching external seller only"))
+        if (IconButton(FontAwesomeIcon.Edit, "Adjust", "Adjust Undercut Pricing\nVerify every listing, match a market-lowest owned retainer exactly, or undercut the cheapest external seller"))
             automation.Start(AutomationMode.Adjust);
         ImGui.SameLine();
-        if (IconButton(FontAwesomeIcon.Play, "Auto", "Auto Check/Adjust Undercuts\nRefresh all listings, then reprice confirmed external undercuts"))
+        if (IconButton(FontAwesomeIcon.Play, "Auto", "Auto Check/Adjust Undercuts\nRefresh all listings, then reprice external undercuts and owned-retainer price mismatches"))
             automation.Start(AutomationMode.CheckAndAdjust);
     }
 

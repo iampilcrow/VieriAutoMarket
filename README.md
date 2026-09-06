@@ -3,7 +3,7 @@
 VieriAutoMarket adds guarded, one-click workflows to the retainer sell list:
 
 - **Check For Undercuts** opens each listing's price comparison so Allagan Market can refresh its status.
-- **Adjust Undercut Pricing** updates listings currently marked red by Allagan Market against the correct verified market reference.
+- **Adjust Undercut Pricing** verifies every active listing and updates external undercuts or owned-retainer price mismatches against the correct market reference.
 - **Auto Check/Adjust Undercuts** refreshes every listing, then updates every confirmed external undercut or owned-retainer price mismatch.
 
 Marketbuddy remains responsible for the user's configured gil/percentage undercut, rounding, price input, and confirmation behavior. VieriAutoMarket never invents a separate price rule.

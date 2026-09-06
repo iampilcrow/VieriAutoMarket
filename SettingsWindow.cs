@@ -30,7 +30,7 @@ internal sealed class SettingsWindow : Window
         DrawDependency("Allagan Market", DependencyService.AllaganMarketName, dependencies.InstallAllaganMarketAsync);
 
         ImGui.Spacing();
-        ImGui.TextWrapped("Marketbuddy controls the undercut amount, percentage and rounding. Allagan Market must have retainer-list highlighting enabled so red listings can be identified.");
+        ImGui.TextWrapped("Marketbuddy controls the undercut amount, percentage and rounding. Allagan Market supplies market data and highlighting; VieriAutoMarket also verifies owned-retainer price matches directly even when a row is not red.");
 
         ImGui.Spacing();
         ImGui.TextUnformatted("Toolbar placement");

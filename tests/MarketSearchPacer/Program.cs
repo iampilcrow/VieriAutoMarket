@@ -26,4 +26,20 @@ if (MarketPricingDecision.Choose(90, 0, 100) != None) throw new Exception("A low
 if (MarketPricingDecision.Choose(90, 100, 0) != None) throw new Exception("Competitive external price caused an update");
 if (MarketPricingDecision.Choose(200, 0, 0) != None) throw new Exception("Missing references caused an update");
 
-Console.WriteLine("16 market pacing and owned-retainer pricing checks passed.");
+var ownedMatch = new OwnedAwareMarketAssessment
+{
+    VisualIndex = 4,
+    OwnedUnitPrice = 675,
+    CheapestOtherOwnedPrice = 323,
+    CheapestExternalPrice = 0,
+};
+if (!AutomationPlan.RequiresOwnedPriceMatch(ownedMatch)) throw new Exception("A 675 gil duplicate did not require matching the owned 323 gil market-lowest listing");
+var adjustmentRows = AutomationPlan.AdjustmentRows([7, 2], [ownedMatch], 20);
+if (!adjustmentRows.SequenceEqual([2, 4, 7])) throw new Exception("Owned-retainer matches were not merged into the adjustment pass");
+ownedMatch.CheapestExternalPrice = 300;
+if (AutomationPlan.RequiresOwnedPriceMatch(ownedMatch)) throw new Exception("An owned listing was preferred over a cheaper external listing");
+ownedMatch.OwnedUnitPrice = 323;
+ownedMatch.CheapestExternalPrice = 0;
+if (AutomationPlan.RequiresOwnedPriceMatch(ownedMatch)) throw new Exception("An already-matched owned price requested a redundant update");
+
+Console.WriteLine("20 market pacing and owned-retainer pricing checks passed.");

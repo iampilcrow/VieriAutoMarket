@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0.12
+
+- Include owned-retainer price mismatches in the adjustment plan even when Allagan Market does not paint the current listing red.
+- Make Adjust Undercut Pricing verify every active listing directly, so a `675` gil listing reliably matches another owned retainer's market-lowest `323` gil listing.
+- Preserve external-seller priority whenever an external listing is cheaper, never raise prices, and avoid redundant updates when owned duplicates already match.
+
 ## 1.0.0.11
 
 - Match a lower price from another owned retainer exactly when that owned listing is currently the market-lowest listing.

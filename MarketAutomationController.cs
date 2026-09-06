@@ -132,12 +132,10 @@ internal sealed class MarketAutomationController : IDisposable
         Status = mode switch
         {
             AutomationMode.Check => "Checking every listing for undercuts",
-            AutomationMode.Adjust => "Finding every listing marked undercut",
+            AutomationMode.Adjust => "Checking and adjusting every listing",
             _ => "Checking every listing, then adjusting undercuts",
         };
-        MoveTo(mode == AutomationMode.Adjust
-            ? AutomationStep.ShowListingForDiscovery
-            : AutomationStep.SelectListing, TimeSpan.Zero);
+        MoveTo(AutomationStep.SelectListing, TimeSpan.Zero);
         chat.Print(Status + ". Keep the retainer market windows open.", Plugin.Tag);
     }
 
@@ -225,7 +223,10 @@ internal sealed class MarketAutomationController : IDisposable
                     WaitOrFail(TimeSpan.FromSeconds(2), "Allagan Market to paint the selected listing");
                     return;
                 }
-                if (priceState == ListingPriceState.Undercut)
+                if (priceState == ListingPriceState.Undercut ||
+                    config.MarketAssessments.Any(x =>
+                        x.VisualIndex == rows[position] &&
+                        AutomationPlan.RequiresOwnedPriceMatch(x)))
                     checkedUndercuts.Add(rows[position]);
                 position++;
                 if (position < rows.Length)
@@ -234,7 +235,10 @@ internal sealed class MarketAutomationController : IDisposable
                     return;
                 }
 
-                rows = AutomationPlan.NormalizeUndercutRows(checkedUndercuts, ui.GetListingCount());
+                rows = AutomationPlan.AdjustmentRows(
+                    checkedUndercuts,
+                    config.MarketAssessments,
+                    ui.GetListingCount());
                 position = 0;
                 if (Mode == AutomationMode.Check)
                 {

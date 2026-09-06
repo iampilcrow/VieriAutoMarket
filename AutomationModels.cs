@@ -135,4 +135,21 @@ internal static class AutomationPlan
 
     internal static int[] NormalizeUndercutRows(IEnumerable<int> rows, int listingCount) =>
         rows.Where(x => x >= 0 && x < Math.Clamp(listingCount, 0, 20)).Distinct().Order().ToArray();
+
+    internal static bool RequiresOwnedPriceMatch(OwnedAwareMarketAssessment assessment) =>
+        MarketPricingDecision.Choose(
+            assessment.OwnedUnitPrice,
+            assessment.CheapestExternalPrice,
+            assessment.CheapestOtherOwnedPrice) == MarketPricingAction.MatchOtherOwned;
+
+    internal static int[] AdjustmentRows(
+        IEnumerable<int> undercutRows,
+        IEnumerable<OwnedAwareMarketAssessment> assessments,
+        int listingCount)
+    {
+        IEnumerable<int> ownedMatchRows = assessments
+            .Where(RequiresOwnedPriceMatch)
+            .Select(x => x.VisualIndex);
+        return NormalizeUndercutRows(undercutRows.Concat(ownedMatchRows), listingCount);
+    }
 }
