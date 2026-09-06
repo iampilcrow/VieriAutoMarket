@@ -16,6 +16,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IChatGui Chat { get; private set; } = null!;
+    [PluginService] internal static IToastGui Toasts { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private readonly WindowSystem windows = new(Tag);
@@ -32,7 +33,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var dependencies = new DependencyService(Pi, Log);
         var marketUi = new RetainerMarketUi(GameGui);
-        automation = new MarketAutomationController(Framework, Chat, Log, Pi, config, dependencies, marketUi);
+        automation = new MarketAutomationController(Framework, Chat, Toasts, Log, Pi, config, dependencies, marketUi);
         settings = new SettingsWindow(config, dependencies, automation);
         windows.AddWindow(settings);
         windows.AddWindow(new MarketToolbarWindow(config, marketUi, automation));

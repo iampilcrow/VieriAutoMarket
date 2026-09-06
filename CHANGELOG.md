@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0.10
+
+- Enforce a safe minimum interval between market-board comparison requests so FFXIV does not reject overlapping searches with “Please wait and try your search again.”
+- Detect that game response, close the incomplete comparison safely, back off, and retry the same listing instead of accepting stale data or eventually timing out.
+
 ## 1.0.0.9
 
 - Removed the invalid market-search identity gate that rejected a fully loaded second result window when FFXIV cleared its transient search ID.

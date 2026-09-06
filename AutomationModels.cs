@@ -17,6 +17,7 @@ internal enum AutomationStep
     OpenAdjustPrice,
     WaitForPriceWindow,
     WaitForMarketResults,
+    RecoverFromSearchThrottle,
     CloseMarketResults,
     WaitForPriceWindowAfterCheck,
     ClosePriceWindow,

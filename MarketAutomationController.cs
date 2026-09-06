@@ -1,5 +1,6 @@
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Dalamud.Game.Text.SeStringHandling;
 
 namespace VieriAutoMarket;
 
@@ -11,14 +12,17 @@ internal sealed class MarketAutomationController : IDisposable
     private static readonly TimeSpan PriceVerificationTimeout = TimeSpan.FromSeconds(8);
     private const int MaxEmptyResultRetries = 2;
     private const int MaxAdjustmentRetries = 2;
+    private const int MaxSearchThrottleRetries = 3;
 
     private readonly IFramework framework;
     private readonly IChatGui chat;
+    private readonly IToastGui toasts;
     private readonly IPluginLog log;
     private readonly IDalamudPluginInterface pi;
     private readonly Configuration config;
     private readonly DependencyService dependencies;
     private readonly RetainerMarketUi ui;
+    private readonly MarketSearchPacer searchPacer = new();
     private readonly List<int> checkedUndercuts = [];
     private readonly List<MarketRunReportEntry> runReport = [];
     private int[] allRows = [];
@@ -34,22 +38,26 @@ internal sealed class MarketAutomationController : IDisposable
     private int failedAdjustmentCount;
     private int currentRowRetryCount;
     private int currentAdjustmentRetryCount;
+    private int currentSearchThrottleRetries;
     private RetainerListingSnapshot currentListing;
     private RetainerListingSnapshot originalListing;
     private ExternalMarketListing currentCompetitor;
     private string pendingSkipOutcome = string.Empty;
+    private bool searchThrottleRejected;
 
-    internal MarketAutomationController(IFramework framework, IChatGui chat, IPluginLog log,
+    internal MarketAutomationController(IFramework framework, IChatGui chat, IToastGui toasts, IPluginLog log,
         IDalamudPluginInterface pi, Configuration config, DependencyService dependencies, RetainerMarketUi ui)
     {
         this.framework = framework;
         this.chat = chat;
+        this.toasts = toasts;
         this.log = log;
         this.pi = pi;
         this.config = config;
         this.dependencies = dependencies;
         this.ui = ui;
         framework.Update += OnFrameworkUpdate;
+        toasts.ErrorToast += OnErrorToast;
     }
 
     internal bool IsRunning => Step != AutomationStep.Idle;
@@ -106,6 +114,7 @@ internal sealed class MarketAutomationController : IDisposable
         failedAdjustmentCount = 0;
         currentRowRetryCount = 0;
         currentAdjustmentRetryCount = 0;
+        currentSearchThrottleRetries = 0;
         currentListing = default;
         originalListing = default;
         currentCompetitor = default;
@@ -167,6 +176,24 @@ internal sealed class MarketAutomationController : IDisposable
         if (IsMarketbuddyLocked())
         {
             Fail("Marketbuddy became locked by another plugin.");
+            return;
+        }
+
+        if (searchThrottleRejected)
+        {
+            searchThrottleRejected = false;
+            currentSearchThrottleRetries++;
+            if (currentSearchThrottleRetries > MaxSearchThrottleRetries)
+            {
+                Fail("The game repeatedly rejected market searches after safe backoff retries.");
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            searchPacer.RecordRejected(now);
+            TryReturnToSellList();
+            Status = $"The game requested a market-search pause; retrying item {position + 1} of {rows.Length} safely";
+            MoveTo(AutomationStep.RecoverFromSearchThrottle, searchPacer.Remaining(now));
             return;
         }
 
@@ -250,11 +277,19 @@ internal sealed class MarketAutomationController : IDisposable
                 break;
 
             case AutomationStep.OpenAdjustPrice:
+                DateTime searchStart = DateTime.UtcNow;
+                if (!searchPacer.CanStart(searchStart))
+                {
+                    Status = $"Waiting for the market-search cooldown before item {position + 1} of {rows.Length}";
+                    nextActionUtc = searchStart + searchPacer.Remaining(searchStart);
+                    return;
+                }
                 if (!ui.HasAdjustPriceEntry() || !ui.SelectAdjustPrice())
                 {
                     Fail("The selected listing did not offer Adjust Price.");
                     return;
                 }
+                searchPacer.RecordStarted(searchStart);
                 MoveTo(AutomationStep.WaitForPriceWindow);
                 break;
 
@@ -285,6 +320,8 @@ internal sealed class MarketAutomationController : IDisposable
                     WaitOrFail(MarketDataTimeout, "market results from Marketbuddy");
                     return;
                 }
+
+                currentSearchThrottleRetries = 0;
 
                 if (marketResults == MarketResultsState.ReadyWithoutListings)
                 {
@@ -355,6 +392,15 @@ internal sealed class MarketAutomationController : IDisposable
                     : $"Allagan Market checked item {position + 1} of {rows.Length}";
                 MoveTo(adjustmentPass ? AutomationStep.ClickBestListing : AutomationStep.CloseMarketResults,
                     TimeSpan.FromMilliseconds(Math.Max(350, config.ActionDelayMilliseconds)));
+                break;
+
+            case AutomationStep.RecoverFromSearchThrottle:
+                if (!ui.IsReady("RetainerSellList"))
+                {
+                    WaitOrFail(WindowTimeout, "the retainer sell list after the market-search cooldown");
+                    return;
+                }
+                MoveTo(AutomationStep.SelectListing, TimeSpan.Zero);
                 break;
 
             case AutomationStep.CloseMarketResults:
@@ -554,6 +600,7 @@ internal sealed class MarketAutomationController : IDisposable
         position++;
         currentRowRetryCount = 0;
         currentAdjustmentRetryCount = 0;
+        currentSearchThrottleRetries = 0;
         currentListing = default;
         originalListing = default;
         currentCompetitor = default;
@@ -639,6 +686,12 @@ internal sealed class MarketAutomationController : IDisposable
         }
     }
 
+    private void OnErrorToast(ref SeString message, ref bool isHandled)
+    {
+        if (IsRunning && MarketSearchPacer.IsThrottleMessage(message.TextValue))
+            searchThrottleRejected = true;
+    }
+
     private void MoveTo(AutomationStep step, TimeSpan? delay = null)
     {
         Step = step;
@@ -681,5 +734,9 @@ internal sealed class MarketAutomationController : IDisposable
 
     private static string FriendlyStep(AutomationStep step) => step.ToString().Replace("WaitFor", "waiting for ");
 
-    public void Dispose() => framework.Update -= OnFrameworkUpdate;
+    public void Dispose()
+    {
+        framework.Update -= OnFrameworkUpdate;
+        toasts.ErrorToast -= OnErrorToast;
+    }
 }
