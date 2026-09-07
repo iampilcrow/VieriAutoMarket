@@ -10,6 +10,8 @@ Marketbuddy remains responsible for the user's configured gil/percentage undercu
 
 VieriAutoMarket identifies every retainer owned by the current player. When another owned retainer has the market-lowest price for the same item and quality, the current listing matches that price exactly instead of undercutting it. If an external seller is lower, Marketbuddy's configured undercut rule remains authoritative. HQ/NQ listings are evaluated separately, prices are never raised by owned-retainer matching, and every saved price is verified before an adjustment advances.
 
+Automatic pricing also protects against artificial 1-gil listings. When a 1-gil entry is followed by a clearly disconnected low-price cluster (for example `1, 5, 10,000, 10,200`), VieriAutoMarket ignores the full outlier cluster and gives Marketbuddy the logical `10,000`-gil reference. Genuinely inexpensive markets without that discontinuity are left intact; if no safe reference exists, the listing is not changed.
+
 ## Requirements
 
 - Marketbuddy
@@ -19,7 +21,7 @@ Both dependencies are shown in `/vamarket` and can be installed from that window
 
 ## Safety
 
-The automation only starts from an open retainer sell list. Every expected game window is verified, each wait is bounded, and an unexpected state stops the operation and returns toward the sell list without changing additional prices. If complete retainer ownership data is unavailable, repricing waits and then stops safely rather than risking a self-undercut.
+The automation only starts from an open retainer sell list. Every expected game window is verified, each wait is bounded, and an unexpected state stops the operation and returns toward the sell list without changing additional prices. Exact owned-retainer matching waits for the comparison window to close, enters the value through the game's numeric price control, and confirms with a complete game event before verifying the saved price. If complete retainer ownership data is unavailable, repricing waits and then stops safely rather than risking a self-undercut.
 
 The settings window keeps a local report for the last run, including the item, owned retainer, quality, old price, reference retainer and price, verified final price, and outcome.
 

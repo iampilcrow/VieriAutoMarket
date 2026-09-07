@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0.13
+
+- Replace the unsafe owned-retainer confirmation click that caused repeatable native FFXIV crashes with the complete event payload used by Marketbuddy, after the comparison window is fully closed and settled.
+- Enter exact owned-retainer match prices through the game's numeric price control and verify item, retainer, quality, entered price, and saved price before continuing.
+- Detect and ignore the entire suspicious low-price cluster behind a 1-gil listing (for example, `1, 5, 10,000` uses `10,000`). Use the logical market above the discontinuity, or leave the item unchanged when no safe reference exists.
+
 ## 1.0.0.12
 
 - Include owned-retainer price mismatches in the adjustment plan even when Allagan Market does not paint the current listing red.

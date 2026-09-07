@@ -9,6 +9,7 @@ using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using System.Runtime.InteropServices;
 
 namespace VieriAutoMarket;
 
@@ -32,6 +33,12 @@ internal sealed unsafe class RetainerMarketUi
     {
         AtkUnitBase* addon = GetAddon(name);
         return addon != null && addon->IsVisible && addon->UldManager.LoadedState == AtkLoadState.Loaded;
+    }
+
+    internal bool IsVisible(string name)
+    {
+        AtkUnitBase* addon = GetAddon(name);
+        return addon != null && addon->IsVisible;
     }
 
     internal int GetListingCount()
@@ -300,15 +307,11 @@ internal sealed unsafe class RetainerMarketUi
             return ExternalListingState.Waiting;
 
         InfoProxyItemSearch* search = InfoProxyItemSearch.Instance();
+        bool ignoredSuspiciousLowPrices = false;
         if (search != null && TryGetOwnedRetainerIds(search, out HashSet<ulong> ownedIds))
         {
             int resultCount = Math.Min(Math.Min((int)search->ListingCount, addon->Results->GetItemCount()), 100);
-            uint lowestPrice = uint.MaxValue;
-            int lowestIndex = -1;
-            ulong lowestRetainer = 0;
-            uint lowestOwnedPrice = uint.MaxValue;
-            int lowestOwnedIndex = -1;
-            ulong lowestOwnedRetainer = 0;
+            var candidates = new List<(int Index, MarketBoardListing Listing, bool Owned)>();
             bool foundSelectedItem = false;
             for (int i = 0; i < resultCount; i++)
             {
@@ -318,12 +321,29 @@ internal sealed unsafe class RetainerMarketUi
                     continue;
 
                 foundSelectedItem = true;
-                if (listing.RetainerId == 0 || listing.UnitPrice == 0)
+                if (listing.RetainerId == 0 || listing.UnitPrice == 0 ||
+                    listing.RetainerId == currentRetainerId)
                     continue;
 
-                if (ownedIds.Contains(listing.RetainerId))
+                candidates.Add((i, listing, ownedIds.Contains(listing.RetainerId)));
+            }
+
+            uint referenceFloor = MarketPriceSafeguard.SelectReferenceFloor(
+                candidates.Select(x => x.Listing.UnitPrice), out ignoredSuspiciousLowPrices);
+            uint lowestPrice = uint.MaxValue;
+            int lowestIndex = -1;
+            ulong lowestRetainer = 0;
+            uint lowestOwnedPrice = uint.MaxValue;
+            int lowestOwnedIndex = -1;
+            ulong lowestOwnedRetainer = 0;
+            foreach ((int i, MarketBoardListing listing, bool owned) in candidates)
+            {
+                if (referenceFloor == 0 || listing.UnitPrice < referenceFloor)
+                    continue;
+
+                if (owned)
                 {
-                    if (listing.RetainerId == currentRetainerId || listing.UnitPrice >= lowestOwnedPrice)
+                    if (listing.UnitPrice >= lowestOwnedPrice)
                         continue;
 
                     lowestOwnedPrice = listing.UnitPrice;
@@ -345,7 +365,10 @@ internal sealed unsafe class RetainerMarketUi
             if (foundSelectedItem)
             {
                 if (lowestIndex < 0 && lowestOwnedIndex < 0)
+                {
+                    result = new MarketPriceSnapshot(default, default, ignoredSuspiciousLowPrices);
                     return ExternalListingState.None;
+                }
 
                 ExternalMarketListing external = lowestIndex < 0
                     ? default
@@ -361,7 +384,7 @@ internal sealed unsafe class RetainerMarketUi
                         lowestOwnedPrice,
                         lowestOwnedRetainer,
                         GetMarketResultRetainerName(addon, lowestOwnedIndex));
-                result = new MarketPriceSnapshot(external, otherOwned);
+                result = new MarketPriceSnapshot(external, otherOwned, ignoredSuspiciousLowPrices);
                 return ExternalListingState.Ready;
             }
         }
@@ -372,6 +395,7 @@ internal sealed unsafe class RetainerMarketUi
             return ExternalListingState.Waiting;
 
         int visibleResultCount = Math.Min(addon->Results->GetItemCount(), 100);
+        var fallbackCandidates = new List<(int Index, uint Price, string Retainer, bool Owned)>();
         uint fallbackLowestPrice = uint.MaxValue;
         int fallbackLowestIndex = -1;
         string fallbackLowestRetainer = string.Empty;
@@ -398,10 +422,22 @@ internal sealed unsafe class RetainerMarketUi
             if (isHighQuality != selectedIdentity.IsHighQuality)
                 continue;
 
-            if (ownedRetainerNames.Contains(retainerName))
+            if (retainerName.Equals(currentRetainerName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            fallbackCandidates.Add((i, unitPrice, retainerName, ownedRetainerNames.Contains(retainerName)));
+        }
+
+        uint fallbackReferenceFloor = MarketPriceSafeguard.SelectReferenceFloor(
+            fallbackCandidates.Select(x => x.Price), out ignoredSuspiciousLowPrices);
+        foreach ((int i, uint unitPrice, string retainerName, bool owned) in fallbackCandidates)
+        {
+            if (fallbackReferenceFloor == 0 || unitPrice < fallbackReferenceFloor)
+                continue;
+
+            if (owned)
             {
-                if (retainerName.Equals(currentRetainerName, StringComparison.OrdinalIgnoreCase) ||
-                    unitPrice >= fallbackLowestOwnedPrice)
+                if (unitPrice >= fallbackLowestOwnedPrice)
                     continue;
 
                 fallbackLowestOwnedPrice = unitPrice;
@@ -419,7 +455,10 @@ internal sealed unsafe class RetainerMarketUi
         }
 
         if (fallbackLowestIndex < 0 && fallbackLowestOwnedIndex < 0)
+        {
+            result = new MarketPriceSnapshot(default, default, ignoredSuspiciousLowPrices);
             return ExternalListingState.None;
+        }
 
         ExternalMarketListing fallbackExternal = fallbackLowestIndex < 0
             ? default
@@ -435,7 +474,7 @@ internal sealed unsafe class RetainerMarketUi
                 fallbackLowestOwnedPrice,
                 0,
                 fallbackLowestOwnedRetainer);
-        result = new MarketPriceSnapshot(fallbackExternal, fallbackOwned);
+        result = new MarketPriceSnapshot(fallbackExternal, fallbackOwned, ignoredSuspiciousLowPrices);
         return ExternalListingState.Ready;
     }
 
@@ -455,23 +494,39 @@ internal sealed unsafe class RetainerMarketUi
     internal bool SetAskingPrice(uint unitPrice)
     {
         AddonRetainerSell* addon = (AddonRetainerSell*)GetAddon("RetainerSell");
-        if (addon == null || !addon->IsVisible || unitPrice == 0 || unitPrice > int.MaxValue)
+        if (addon == null || !addon->IsVisible || addon->UldManager.LoadedState != AtkLoadState.Loaded ||
+            addon->AskingPrice == null || unitPrice == 0 || unitPrice > int.MaxValue)
             return false;
 
-        new AddonMaster.RetainerSell(addon).AskingPrice = (int)unitPrice;
+        // Use the real numeric input, as Marketbuddy and Allagan Market do. The generic
+        // RetainerSell callback setter is not a safe substitute for this component.
+        addon->AskingPrice->SetValue((int)unitPrice);
         return true;
     }
 
     internal bool ConfirmAskingPrice()
     {
         AddonRetainerSell* addon = (AddonRetainerSell*)GetAddon("RetainerSell");
-        if (addon == null || !addon->IsVisible)
+        if (addon == null || !addon->IsVisible || addon->UldManager.LoadedState != AtkLoadState.Loaded ||
+            addon->Confirm == null || !addon->Confirm->IsEnabled)
             return false;
 
-        var master = new AddonMaster.RetainerSell(addon);
-        if (master.ConfirmButton == null || !master.ConfirmButton->IsEnabled)
-            return false;
-        master.Confirm();
+        // AddonButton.ClickAddonButton sends this addon an incomplete event payload and
+        // crashes inside AddonRetainerSell.ReceiveEvent. Reproduce the complete event used
+        // by Marketbuddy's proven confirmation path instead.
+        AtkEvent* atkEvent = (AtkEvent*)NativeMemory.AllocZeroed(0x40);
+        AtkEventData* eventData = (AtkEventData*)NativeMemory.AllocZeroed(0x40);
+        try
+        {
+            *(nint*)((byte*)atkEvent + 0x08) = (nint)addon->Confirm;
+            *(nint*)((byte*)atkEvent + 0x10) = (nint)addon;
+            ((AtkEventListener*)addon)->ReceiveEvent((AtkEventType)25, 21, atkEvent, eventData);
+        }
+        finally
+        {
+            NativeMemory.Free(atkEvent);
+            NativeMemory.Free(eventData);
+        }
         return true;
     }
 

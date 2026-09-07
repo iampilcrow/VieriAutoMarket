@@ -17,6 +17,15 @@ if (!pacer.CanStart(origin.AddMilliseconds(6600))) throw new Exception("Rejected
 if (!VieriAutoMarket.MarketSearchPacer.IsThrottleMessage("Please wait and try your search again.")) throw new Exception("Throttle message was not recognized");
 if (VieriAutoMarket.MarketSearchPacer.IsThrottleMessage("Market search complete.")) throw new Exception("Unrelated message was treated as a throttle");
 
+if (MarketPriceSafeguard.SelectReferenceFloor(new uint[] { 1, 5, 10_000, 10_200 }, out bool ignoredLowCluster) != 10_000 || !ignoredLowCluster)
+    throw new Exception("A 1/5-gil sabotage cluster was not skipped in favor of the logical market");
+if (MarketPriceSafeguard.SelectReferenceFloor(new uint[] { 1, 10_000 }, out bool ignoredSingleOutlier) != 10_000 || !ignoredSingleOutlier)
+    throw new Exception("A lone 1-gil outlier was not skipped");
+if (MarketPriceSafeguard.SelectReferenceFloor(new uint[] { 4, 5, 6 }, out bool ignoredNormalMarket) != 4 || ignoredNormalMarket)
+    throw new Exception("A genuinely cheap market was incorrectly filtered");
+if (MarketPriceSafeguard.SelectReferenceFloor(new uint[] { 1 }, out bool onlyOneGilIgnored) != 0 || !onlyOneGilIgnored)
+    throw new Exception("A lone 1-gil market should be left unchanged");
+
 if (MarketPricingDecision.Choose(200, 0, 100) != MatchOtherOwned) throw new Exception("Owned-only lowest price was not matched");
 if (MarketPricingDecision.Choose(200, 150, 100) != MatchOtherOwned) throw new Exception("Market-lowest owned price was not preferred");
 if (MarketPricingDecision.Choose(200, 100, 150) != UndercutExternal) throw new Exception("Lower external seller was not undercut");
@@ -42,4 +51,4 @@ ownedMatch.OwnedUnitPrice = 323;
 ownedMatch.CheapestExternalPrice = 0;
 if (AutomationPlan.RequiresOwnedPriceMatch(ownedMatch)) throw new Exception("An already-matched owned price requested a redundant update");
 
-Console.WriteLine("20 market pacing and owned-retainer pricing checks passed.");
+Console.WriteLine("24 market pacing, crash-safety, outlier-protection, and owned-retainer pricing checks passed.");

@@ -76,10 +76,56 @@ internal readonly record struct ExternalMarketListing(
 
 internal readonly record struct MarketPriceSnapshot(
     ExternalMarketListing BestExternal,
-    ExternalMarketListing BestOtherOwned)
+    ExternalMarketListing BestOtherOwned,
+    bool IgnoredSuspiciousLowPrices = false)
 {
     internal bool HasExternal => BestExternal.UnitPrice > 0;
     internal bool HasOtherOwned => BestOtherOwned.UnitPrice > 0;
+}
+
+internal static class MarketPriceSafeguard
+{
+    private const decimal SuspiciousGapRatio = 20m;
+    private const uint SuspiciousGapGil = 100;
+
+    // A 1-gil listing activates outlier protection. Walk upward through the ordered
+    // prices and use the market above the largest clearly artificial discontinuity.
+    // Example: 1, 5, 10,000, 10,200 selects 10,000 rather than merely selecting 5.
+    internal static uint SelectReferenceFloor(IEnumerable<uint> unitPrices, out bool ignoredSuspiciousLowPrices)
+    {
+        uint[] prices = unitPrices.Where(x => x > 0).Distinct().Order().ToArray();
+        ignoredSuspiciousLowPrices = false;
+        if (prices.Length == 0)
+            return 0;
+        if (prices[0] != 1)
+            return prices[0];
+
+        int bestSplit = -1;
+        decimal bestRatio = 0;
+        for (int i = 0; i < prices.Length - 1; i++)
+        {
+            uint lower = prices[i];
+            uint higher = prices[i + 1];
+            uint gap = higher - lower;
+            decimal ratio = (decimal)higher / lower;
+            if (gap < SuspiciousGapGil || ratio < SuspiciousGapRatio || ratio <= bestRatio)
+                continue;
+
+            bestSplit = i + 1;
+            bestRatio = ratio;
+        }
+
+        if (bestSplit >= 0)
+        {
+            ignoredSuspiciousLowPrices = true;
+            return prices[bestSplit];
+        }
+
+        // With no credible higher market cluster, 1 gil is not a usable undercut
+        // reference. Use the next real price if one exists; otherwise do nothing.
+        ignoredSuspiciousLowPrices = true;
+        return prices.Length > 1 ? prices[1] : 0;
+    }
 }
 
 internal enum MarketPricingAction

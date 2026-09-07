@@ -10,6 +10,7 @@ internal sealed class MarketAutomationController : IDisposable
     private static readonly TimeSpan MarketDataTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan EmptyResultConfirmation = TimeSpan.FromMilliseconds(1500);
     private static readonly TimeSpan PriceVerificationTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan OwnedMatchWindowSettle = TimeSpan.FromMilliseconds(500);
     private const int MaxEmptyResultRetries = 2;
     private const int MaxAdjustmentRetries = 2;
     private const int MaxSearchThrottleRetries = 3;
@@ -365,12 +366,16 @@ internal sealed class MarketAutomationController : IDisposable
                 {
                     RecordAssessment(currentListing, 0, 0);
                     skipAdjustmentAfterClose = adjustmentPass;
-                    pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
+                    pendingSkipOutcome = priceSnapshot.IgnoredSuspiciousLowPrices
+                        ? "Protected: ignored a suspicious low-price cluster; no safe automatic price reference"
+                        : "Unchanged: no external competitor; owned listings ignored";
                     if (!adjustmentPass)
                         AddReport(currentListing, 0, currentListing.UnitPrice,
-                            "Checked: no external competitor; owned listings ignored");
+                            pendingSkipOutcome);
                     Status = adjustmentPass
-                        ? $"No external competitor for item {position + 1} of {rows.Length}; your retainers will not undercut one another"
+                        ? priceSnapshot.IgnoredSuspiciousLowPrices
+                            ? $"Protected item {position + 1} of {rows.Length} from a suspicious low-price cluster"
+                            : $"No external competitor for item {position + 1} of {rows.Length}; your retainers will not undercut one another"
                         : $"Checked item {position + 1} of {rows.Length}; only your own listings remain";
                     MoveTo(AutomationStep.CloseMarketResults,
                         TimeSpan.FromMilliseconds(Math.Max(350, config.ActionDelayMilliseconds)));
@@ -399,6 +404,8 @@ internal sealed class MarketAutomationController : IDisposable
                             "Checked: already at or below the lowest price on another owned retainer",
                         _ => "Checked: no competing listing",
                     };
+                    if (priceSnapshot.IgnoredSuspiciousLowPrices)
+                        checkOutcome += "; ignored a suspicious low-price cluster";
                     AddReport(currentListing, checkReference.UnitPrice, currentListing.UnitPrice,
                         checkOutcome, checkReference.RetainerName);
                 }
@@ -448,17 +455,19 @@ internal sealed class MarketAutomationController : IDisposable
                 break;
 
             case AutomationStep.SetOwnedMatchPrice:
-                if (!ui.IsReady("RetainerSell"))
+                if (ui.IsVisible("ItemSearchResult") || !ui.IsReady("RetainerSell"))
                 {
-                    WaitOrFail(WindowTimeout, "the Adjust Price window for an owned-retainer match");
+                    WaitOrFail(WindowTimeout, "the market results to close and Adjust Price window to settle");
                     return;
                 }
+                if (!Expired(OwnedMatchWindowSettle))
+                    return;
                 if (!ui.SetAskingPrice(currentCompetitor.UnitPrice))
                 {
                     Fail("Could not enter the exact owned-retainer price.");
                     return;
                 }
-                MoveTo(AutomationStep.ConfirmOwnedMatchPrice, TimeSpan.FromMilliseconds(250));
+                MoveTo(AutomationStep.ConfirmOwnedMatchPrice, OwnedMatchWindowSettle);
                 break;
 
             case AutomationStep.ConfirmOwnedMatchPrice:
@@ -589,7 +598,9 @@ internal sealed class MarketAutomationController : IDisposable
                 {
                     RecordAssessment(currentListing, 0, 0);
                     currentCompetitor = default;
-                    pendingSkipOutcome = "Unchanged: no external competitor; owned listings ignored";
+                    pendingSkipOutcome = refreshedSnapshot.IgnoredSuspiciousLowPrices
+                        ? "Protected: ignored a suspicious low-price cluster; no safe automatic price reference"
+                        : "Unchanged: no external competitor; owned listings ignored";
                     skipAdjustmentAfterClose = true;
                     MoveTo(AutomationStep.CloseMarketResults, TimeSpan.FromMilliseconds(350));
                     return;
